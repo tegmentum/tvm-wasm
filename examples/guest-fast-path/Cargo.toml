@@ -1,0 +1,16 @@
+[package]
+name = "tvm-guest-fast-path"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+tvm-guest-rt = { path = "../../crates/tvm-guest-rt" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

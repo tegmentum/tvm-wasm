@@ -1,0 +1,31 @@
+name: bench
+
+on:
+  schedule:
+    - cron: "0 6 * * *" # nightly 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  tvm-bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: build workloads
+        run: ./bench-framework/build.sh
+      - name: run tvm-bench (wasmtime)
+        run: cargo run -p tvm-bench-runner --release | tee bench-framework/results/wasmtime-output.txt
+      - name: run tvm-bench (wasmer)
+        run: cargo run -p tvm-bench-runner-wasmer --release
+      - name: regression check
+        run: |
+          latest=$(ls -t bench-framework/results/all-*.json | head -1)
+          python3 bench-framework/check_regression.py "$latest"
+      - name: upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results
+          path: bench-framework/results/*.json

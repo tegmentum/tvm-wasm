@@ -1,0 +1,11 @@
+[package]
+name = "tvm-guest-rt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Guest-side helpers for the TVM raw fast-path imports"
+
+# This crate is host-buildable on its own (no wasm32-only deps), but its main
+# consumers compile it for wasm32-unknown-unknown. The raw FFI is gated on a
+# wasm target so host builds can still type-check the safe wrappers.

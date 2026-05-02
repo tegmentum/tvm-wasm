@@ -1,0 +1,11 @@
+// Development-only world: a tiny guest used to drive an end-to-end test of the
+// host bindings. Not part of the public surface.
+world tvm-guest-demo {
+  import manager;
+  import bytes;
+  import types;
+
+  // Allocates 4 bytes in a fresh hot-heap region, writes [1,2,3,4] and reads
+  // it back, returning the sum (10). Exercises both manager and bytes ifaces.
+  export run-test: func() -> u32;
+}

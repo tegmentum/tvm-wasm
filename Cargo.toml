@@ -1,0 +1,35 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/tvm-core",
+    "crates/tvm-wasmtime",
+    "crates/tvm-tests",
+    "crates/tvm-guest-rt",
+    "crates/tvm-test-harness",
+    "bench-framework/runner",
+    "bench-framework/runner-wasmer",
+]
+exclude = [
+    # Built separately for the wasm32-unknown-unknown target via cargo from the
+    # end-to-end tests. Excluded from the host workspace so a default
+    # `cargo build` doesn't try to compile them for the host triple.
+    "examples/guest-demo",
+    "examples/guest-fast-path",
+    "examples/multimem-probe",
+    "bench-framework/workloads/m32",
+    "bench-framework/workloads/m64",
+    "bench-framework/workloads/tvm",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/tegmentum/tvm-wasm"
+
+[workspace.dependencies]
+thiserror = "1.0"
+wasmtime = { version = "25", features = ["component-model", "cranelift", "runtime"] }
+wat = "1"
+wit-component = "0.217"
+anyhow = "1.0"

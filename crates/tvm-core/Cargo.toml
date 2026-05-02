@@ -1,0 +1,20 @@
+[package]
+name = "tvm-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+default = ["metrics"]
+# When enabled, every read/write/alloc fires an atomic counter increment.
+# Disable for maximum throughput — saves 5–20ns per call on Apple Silicon
+# (5–10ns of `lock add` on x86), at the cost of losing per-region traffic
+# observability via DiagnosticsHost::bytes_read_count etc.
+metrics = []

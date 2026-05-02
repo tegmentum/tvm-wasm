@@ -1,0 +1,17 @@
+/target
+**/*.rs.bk
+Cargo.lock
+
+# Ephemeral benchmark output. The committed baseline.json is the
+# regression-check reference; new runs land here without being tracked.
+bench-framework/results/all-*.json
+bench-framework/results/wasmer-*.json
+bench-framework/results/sequential-*.json
+bench-framework/results/*.png
+
+# Per-example wasm build artifacts (each example has its own target/).
+examples/*/target/
+
+# Workloads built outside the workspace (separate target/ per crate).
+bench-framework/workloads/*/target/
+bench-framework/runner-wasmer/target/

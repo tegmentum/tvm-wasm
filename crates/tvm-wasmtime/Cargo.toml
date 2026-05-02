@@ -1,0 +1,22 @@
+[package]
+name = "tvm-wasmtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+tvm-core = { path = "../tvm-core" }
+wasmtime = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+wat = { workspace = true }
+wit-component = { workspace = true }
+tempfile = "3"
+criterion = "0.5"
+
+[[bench]]
+name = "host_paths"
+harness = false
