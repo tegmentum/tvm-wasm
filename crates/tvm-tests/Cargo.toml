@@ -11,4 +11,6 @@ tvm-core = { path = "../tvm-core" }
 
 [dev-dependencies]
 tvm-core = { path = "../tvm-core" }
+tvm-wasmtime = { path = "../tvm-wasmtime" }
+tvm-guest-mm = { path = "../tvm-guest-mm" }
 tempfile = "3"
