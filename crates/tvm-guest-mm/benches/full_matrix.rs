@@ -322,6 +322,70 @@ fn run_guest_mm_bulk_specialized(size: u32, data: &[u8]) -> anyhow::Result<Vec<D
     })
 }
 
+// ---------- Guest-mm SIMD popcount (symmetric reducer family) ----------
+
+fn run_guest_mm_popcount_simd(size: u32, data: &[u8]) -> anyhow::Result<Vec<Duration>> {
+    let user_body = r#"
+        (func (export "popcount_via_simd") (param $off i32) (param $len i32) (result i64)
+          (call $tvm_simd_popcount_p1 (local.get $off) (local.get $len)))
+    "#;
+    let p = ModuleParams {
+        n_pools: 4,
+        initial_pages_per_pool: ((size as u64 + 65535) / 65536).max(1) as u32,
+        max_pages_per_pool: 16,
+        user_body: user_body.to_string(),
+    };
+    let wat = tvm_guest_mm_module_template(&p);
+    let mut config = Config::new();
+    config.wasm_multi_memory(true);
+    let engine = Engine::new(&config)?;
+    let module = Module::new(&engine, &wat)?;
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store = Store::new(&engine, ());
+    let instance = linker.instantiate(&mut store, &module)?;
+    let mem1 = instance.get_memory(&mut store, "mem1").unwrap();
+    mem1.write(&mut store, 0, data)?;
+    let f = instance.get_typed_func::<(i32, i32), i64>(&mut store, "popcount_via_simd")?;
+    time_loop(|| { let _ = f.call(&mut store, (0, size as i32))?; Ok(()) })
+}
+
+fn run_guest_mm_popcount_scalar(size: u32, data: &[u8]) -> anyhow::Result<Vec<Duration>> {
+    let user_body = r#"
+        (func (export "popcount_via_scalar") (param $off i32) (param $len i32) (result i64)
+          (local $cur i32) (local $end i32) (local $acc i64)
+          (local.set $cur (local.get $off))
+          (local.set $end (i32.add (local.get $off) (local.get $len)))
+          (block $break
+            (loop $continue
+              (br_if $break (i32.eq (local.get $cur) (local.get $end)))
+              (local.set $acc
+                (i64.add (local.get $acc)
+                  (i64.extend_i32_u
+                    (i32.popcnt (call $tvm_load_u8_p1 (local.get $cur))))))
+              (local.set $cur (i32.add (local.get $cur) (i32.const 1)))
+              (br $continue)))
+          (local.get $acc))
+    "#;
+    let p = ModuleParams {
+        n_pools: 4,
+        initial_pages_per_pool: ((size as u64 + 65535) / 65536).max(1) as u32,
+        max_pages_per_pool: 16,
+        user_body: user_body.to_string(),
+    };
+    let wat = tvm_guest_mm_module_template(&p);
+    let mut config = Config::new();
+    config.wasm_multi_memory(true);
+    let engine = Engine::new(&config)?;
+    let module = Module::new(&engine, &wat)?;
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store = Store::new(&engine, ());
+    let instance = linker.instantiate(&mut store, &module)?;
+    let mem1 = instance.get_memory(&mut store, "mem1").unwrap();
+    mem1.write(&mut store, 0, data)?;
+    let f = instance.get_typed_func::<(i32, i32), i64>(&mut store, "popcount_via_scalar")?;
+    time_loop(|| { let _ = f.call(&mut store, (0, size as i32))?; Ok(()) })
+}
+
 // ---------- Guest-mm SIMD sum kernel ----------
 //
 // Calls the SIMD-specialized `tvm_simd_sum_u8_p1` directly — sums
@@ -392,6 +456,25 @@ fn main() -> anyhow::Result<()> {
                 r.label, speedup, u
             );
         }
+        println!();
+    }
+
+    // Popcount: scalar dispatch loop vs SIMD reducer kernel.
+    println!("==> popcount: scalar dispatch vs SIMD reducer");
+    for &size in SIZES {
+        let data: Vec<u8> = (0..size).map(|i| (i & 0xFF) as u8).collect();
+        let scalar = summarize("scalar (per-byte)", run_guest_mm_popcount_scalar(size, &data)?, size);
+        let simd   = summarize("simd (popcount)",   run_guest_mm_popcount_simd(size, &data)?, size);
+        println!("--- size = {} bytes ---", size);
+        for r in &[&scalar, &simd] {
+            println!(
+                "  {:<20} mean={:>10.0}ns  p99={:>10}ns  {:>5.2} GiB/s",
+                r.label, r.mean_ns, r.p99_ns, r.gib_per_s
+            );
+        }
+        let speedup = scalar.mean_ns / simd.mean_ns;
+        let u = mann_whitney_u(&scalar.raw, &simd.raw);
+        println!("    speedup simd / scalar = {:.2}x   U={:.3}", speedup, u);
         println!();
     }
 

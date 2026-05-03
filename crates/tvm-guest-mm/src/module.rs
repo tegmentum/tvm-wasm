@@ -5,7 +5,8 @@
 use crate::dispatch::{
     emit_bulk_copy_dispatcher, emit_bulk_copy_from_default_dispatcher,
     emit_load_dispatcher, emit_specialized_copy_helpers,
-    emit_specialized_simd_kernels, emit_store_dispatcher,
+    emit_specialized_simd_kernels, emit_specialized_simd_reducers,
+    emit_specialized_typed_helpers, emit_store_dispatcher,
 };
 
 #[derive(Clone, Debug)]
@@ -73,10 +74,18 @@ pub fn tvm_guest_mm_module_template(p: &ModuleParams) -> String {
     // pool index. Skips the dispatch chain entirely on the hot path.
     s.push_str(&emit_specialized_copy_helpers(p.n_pools));
 
+    // Specialized typed load/store helpers per pool. Skips the BST
+    // dispatch when the pool is already known.
+    s.push_str(&emit_specialized_typed_helpers(p.n_pools));
+
     // SIMD reduce kernels — `tvm_simd_sum_u8_p{K}` for each pool. 16
     // bytes per iter via v128.load + widening fused adds. Static
     // memory immediate so no dispatch on the hot path.
     s.push_str(&emit_specialized_simd_kernels(p.n_pools));
+
+    // Symmetric SIMD reducer family — xor/and/or fold, count_byte,
+    // popcount, find_byte, min_max. Each per-pool specialized.
+    s.push_str(&emit_specialized_simd_reducers(p.n_pools));
 
     s.push_str("\n  ;; --- user body begins ---\n");
     s.push_str(&p.user_body);

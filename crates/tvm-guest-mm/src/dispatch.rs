@@ -216,6 +216,450 @@ pub(crate) fn emit_specialized_simd_kernels(n_pools: u32) -> String {
     s
 }
 
+/// Symmetric SIMD reducer family — mirrors the host-side reducer API
+/// for pure-guest deployments that don't have a host to delegate to.
+///
+/// All kernels are per-pool specialized (zero dispatch), process 16
+/// bytes per SIMD iteration, and handle a scalar tail. Each follows
+/// the same shape:
+///
+///   - load a v128 from `pool K`
+///   - apply lane-wise op + accumulate
+///   - tail loop for `len % 16` remaining bytes
+///   - horizontal reduce the v128 acc into the scalar return
+///
+/// Naming: `tvm_simd_<op>_p{K}`. All are reducers (single scalar
+/// result). Mutators (fill, xor_with_byte) and multi-output
+/// (histogram) aren't included here — the dedicated `memory.fill` op
+/// handles the former and the latter doesn't SIMD well.
+pub(crate) fn emit_specialized_simd_reducers(n_pools: u32) -> String {
+    let mut s = String::new();
+    for k in 0..n_pools {
+        s.push_str(&simd_xor_fold(k));
+        s.push_str(&simd_and_fold(k));
+        s.push_str(&simd_or_fold(k));
+        s.push_str(&simd_count_byte(k));
+        s.push_str(&simd_popcount(k));
+        s.push_str(&simd_find_byte(k));
+        s.push_str(&simd_min_max(k));
+    }
+    s
+}
+
+/// XOR fold: v128.xor accumulator, horizontal-XOR at end.
+fn simd_xor_fold(k: u32) -> String {
+    format!(
+        r#"  (func $tvm_simd_xor_fold_u8_p{k} (export "tvm_simd_xor_fold_u8_p{k}")
+        (param $off i32) (param $len i32) (result i32)
+    (local $cur i32) (local $end i32) (local $vec_end i32)
+    (local $acc v128) (local $tmp i64) (local $byte i32)
+    (local.set $cur (local.get $off))
+    (local.set $end (i32.add (local.get $off) (local.get $len)))
+    (local.set $vec_end
+      (i32.add (local.get $off)
+               (i32.and (local.get $len) (i32.const -16))))
+    (local.set $acc (v128.const i64x2 0 0))
+    (block $vec_done
+      (loop $vec_continue
+        (br_if $vec_done (i32.eq (local.get $cur) (local.get $vec_end)))
+        (local.set $acc
+          (v128.xor (local.get $acc) (v128.load {k} (local.get $cur))))
+        (local.set $cur (i32.add (local.get $cur) (i32.const 16)))
+        (br $vec_continue)))
+    (local.set $tmp
+      (i64.xor
+        (i64x2.extract_lane 0 (local.get $acc))
+        (i64x2.extract_lane 1 (local.get $acc))))
+    (local.set $tmp
+      (i64.xor (local.get $tmp) (i64.shr_u (local.get $tmp) (i64.const 32))))
+    (local.set $tmp
+      (i64.xor (local.get $tmp) (i64.shr_u (local.get $tmp) (i64.const 16))))
+    (local.set $tmp
+      (i64.xor (local.get $tmp) (i64.shr_u (local.get $tmp) (i64.const 8))))
+    (local.set $byte (i32.and (i32.wrap_i64 (local.get $tmp)) (i32.const 0xff)))
+    (block $tail_done
+      (loop $tail_continue
+        (br_if $tail_done (i32.eq (local.get $cur) (local.get $end)))
+        (local.set $byte
+          (i32.xor (local.get $byte)
+                   (i32.load8_u {k} (local.get $cur))))
+        (local.set $cur (i32.add (local.get $cur) (i32.const 1)))
+        (br $tail_continue)))
+    (local.get $byte))
+"#,
+        k = k,
+    )
+}
+
+/// AND fold: identity is all-ones; v128.and per iter; horizontal AND at end.
+fn simd_and_fold(k: u32) -> String {
+    format!(
+        r#"  (func $tvm_simd_and_fold_u8_p{k} (export "tvm_simd_and_fold_u8_p{k}")
+        (param $off i32) (param $len i32) (result i32)
+    (local $cur i32) (local $end i32) (local $vec_end i32)
+    (local $acc v128) (local $tmp i64) (local $byte i32)
+    (local.set $cur (local.get $off))
+    (local.set $end (i32.add (local.get $off) (local.get $len)))
+    (local.set $vec_end
+      (i32.add (local.get $off)
+               (i32.and (local.get $len) (i32.const -16))))
+    (local.set $acc (v128.const i64x2 -1 -1))
+    (local.set $byte (i32.const 0xff))
+    (block $vec_done
+      (loop $vec_continue
+        (br_if $vec_done (i32.eq (local.get $cur) (local.get $vec_end)))
+        (local.set $acc
+          (v128.and (local.get $acc) (v128.load {k} (local.get $cur))))
+        (local.set $cur (i32.add (local.get $cur) (i32.const 16)))
+        (br $vec_continue)))
+    (if (i32.ne (local.get $vec_end) (local.get $off))
+      (then
+        (local.set $tmp
+          (i64.and
+            (i64x2.extract_lane 0 (local.get $acc))
+            (i64x2.extract_lane 1 (local.get $acc))))
+        (local.set $tmp
+          (i64.and (local.get $tmp) (i64.shr_u (local.get $tmp) (i64.const 32))))
+        (local.set $tmp
+          (i64.and (local.get $tmp) (i64.shr_u (local.get $tmp) (i64.const 16))))
+        (local.set $tmp
+          (i64.and (local.get $tmp) (i64.shr_u (local.get $tmp) (i64.const 8))))
+        (local.set $byte
+          (i32.and (i32.wrap_i64 (local.get $tmp)) (i32.const 0xff)))))
+    (block $tail_done
+      (loop $tail_continue
+        (br_if $tail_done (i32.eq (local.get $cur) (local.get $end)))
+        (local.set $byte
+          (i32.and (local.get $byte)
+                   (i32.load8_u {k} (local.get $cur))))
+        (local.set $cur (i32.add (local.get $cur) (i32.const 1)))
+        (br $tail_continue)))
+    (local.get $byte))
+"#,
+        k = k,
+    )
+}
+
+/// OR fold: identity is zero; v128.or per iter.
+fn simd_or_fold(k: u32) -> String {
+    format!(
+        r#"  (func $tvm_simd_or_fold_u8_p{k} (export "tvm_simd_or_fold_u8_p{k}")
+        (param $off i32) (param $len i32) (result i32)
+    (local $cur i32) (local $end i32) (local $vec_end i32)
+    (local $acc v128) (local $tmp i64) (local $byte i32)
+    (local.set $cur (local.get $off))
+    (local.set $end (i32.add (local.get $off) (local.get $len)))
+    (local.set $vec_end
+      (i32.add (local.get $off)
+               (i32.and (local.get $len) (i32.const -16))))
+    (local.set $acc (v128.const i64x2 0 0))
+    (block $vec_done
+      (loop $vec_continue
+        (br_if $vec_done (i32.eq (local.get $cur) (local.get $vec_end)))
+        (local.set $acc
+          (v128.or (local.get $acc) (v128.load {k} (local.get $cur))))
+        (local.set $cur (i32.add (local.get $cur) (i32.const 16)))
+        (br $vec_continue)))
+    (local.set $tmp
+      (i64.or
+        (i64x2.extract_lane 0 (local.get $acc))
+        (i64x2.extract_lane 1 (local.get $acc))))
+    (local.set $tmp
+      (i64.or (local.get $tmp) (i64.shr_u (local.get $tmp) (i64.const 32))))
+    (local.set $tmp
+      (i64.or (local.get $tmp) (i64.shr_u (local.get $tmp) (i64.const 16))))
+    (local.set $tmp
+      (i64.or (local.get $tmp) (i64.shr_u (local.get $tmp) (i64.const 8))))
+    (local.set $byte (i32.and (i32.wrap_i64 (local.get $tmp)) (i32.const 0xff)))
+    (block $tail_done
+      (loop $tail_continue
+        (br_if $tail_done (i32.eq (local.get $cur) (local.get $end)))
+        (local.set $byte
+          (i32.or (local.get $byte)
+                  (i32.load8_u {k} (local.get $cur))))
+        (local.set $cur (i32.add (local.get $cur) (i32.const 1)))
+        (br $tail_continue)))
+    (local.get $byte))
+"#,
+        k = k,
+    )
+}
+
+/// count_byte: i8x16.eq + i8x16.bitmask + i32.popcnt of mask.
+fn simd_count_byte(k: u32) -> String {
+    format!(
+        r#"  (func $tvm_simd_count_byte_p{k} (export "tvm_simd_count_byte_p{k}")
+        (param $off i32) (param $len i32) (param $byte i32) (result i32)
+    (local $cur i32) (local $end i32) (local $vec_end i32)
+    (local $broadcast v128) (local $count i32)
+    (local.set $cur (local.get $off))
+    (local.set $end (i32.add (local.get $off) (local.get $len)))
+    (local.set $vec_end
+      (i32.add (local.get $off)
+               (i32.and (local.get $len) (i32.const -16))))
+    (local.set $broadcast (i8x16.splat (local.get $byte)))
+    (block $vec_done
+      (loop $vec_continue
+        (br_if $vec_done (i32.eq (local.get $cur) (local.get $vec_end)))
+        (local.set $count
+          (i32.add (local.get $count)
+            (i32.popcnt
+              (i8x16.bitmask
+                (i8x16.eq
+                  (v128.load {k} (local.get $cur))
+                  (local.get $broadcast))))))
+        (local.set $cur (i32.add (local.get $cur) (i32.const 16)))
+        (br $vec_continue)))
+    (block $tail_done
+      (loop $tail_continue
+        (br_if $tail_done (i32.eq (local.get $cur) (local.get $end)))
+        (if (i32.eq (i32.load8_u {k} (local.get $cur)) (local.get $byte))
+          (then (local.set $count (i32.add (local.get $count) (i32.const 1)))))
+        (local.set $cur (i32.add (local.get $cur) (i32.const 1)))
+        (br $tail_continue)))
+    (local.get $count))
+"#,
+        k = k,
+    )
+}
+
+/// popcount: i8x16.popcnt then accumulate into i32x4 via pairwise widens.
+fn simd_popcount(k: u32) -> String {
+    format!(
+        r#"  (func $tvm_simd_popcount_p{k} (export "tvm_simd_popcount_p{k}")
+        (param $off i32) (param $len i32) (result i64)
+    (local $cur i32) (local $end i32) (local $vec_end i32)
+    (local $acc v128) (local $tmp v128) (local $scalar i64)
+    (local.set $cur (local.get $off))
+    (local.set $end (i32.add (local.get $off) (local.get $len)))
+    (local.set $vec_end
+      (i32.add (local.get $off)
+               (i32.and (local.get $len) (i32.const -16))))
+    (local.set $acc (v128.const i64x2 0 0))
+    (block $vec_done
+      (loop $vec_continue
+        (br_if $vec_done (i32.eq (local.get $cur) (local.get $vec_end)))
+        (local.set $tmp
+          (i32x4.extadd_pairwise_i16x8_u
+            (i16x8.extadd_pairwise_i8x16_u
+              (i8x16.popcnt
+                (v128.load {k} (local.get $cur))))))
+        (local.set $acc
+          (i64x2.add
+            (i64x2.add
+              (local.get $acc)
+              (i64x2.extend_low_i32x4_u (local.get $tmp)))
+            (i64x2.extend_high_i32x4_u (local.get $tmp))))
+        (local.set $cur (i32.add (local.get $cur) (i32.const 16)))
+        (br $vec_continue)))
+    (local.set $scalar
+      (i64.add
+        (i64x2.extract_lane 0 (local.get $acc))
+        (i64x2.extract_lane 1 (local.get $acc))))
+    (block $tail_done
+      (loop $tail_continue
+        (br_if $tail_done (i32.eq (local.get $cur) (local.get $end)))
+        (local.set $scalar
+          (i64.add (local.get $scalar)
+            (i64.extend_i32_u
+              (i32.popcnt (i32.load8_u {k} (local.get $cur))))))
+        (local.set $cur (i32.add (local.get $cur) (i32.const 1)))
+        (br $tail_continue)))
+    (local.get $scalar))
+"#,
+        k = k,
+    )
+}
+
+/// find_byte: i8x16.eq + i8x16.bitmask + i32.ctz to locate first match.
+/// Returns offset within `[off, off+len)` or -1.
+fn simd_find_byte(k: u32) -> String {
+    format!(
+        r#"  (func $tvm_simd_find_byte_p{k} (export "tvm_simd_find_byte_p{k}")
+        (param $off i32) (param $len i32) (param $byte i32) (result i32)
+    (local $cur i32) (local $end i32) (local $vec_end i32)
+    (local $broadcast v128) (local $mask i32)
+    (local.set $cur (local.get $off))
+    (local.set $end (i32.add (local.get $off) (local.get $len)))
+    (local.set $vec_end
+      (i32.add (local.get $off)
+               (i32.and (local.get $len) (i32.const -16))))
+    (local.set $broadcast (i8x16.splat (local.get $byte)))
+    (block $vec_done
+      (loop $vec_continue
+        (br_if $vec_done (i32.eq (local.get $cur) (local.get $vec_end)))
+        (local.set $mask
+          (i8x16.bitmask
+            (i8x16.eq
+              (v128.load {k} (local.get $cur))
+              (local.get $broadcast))))
+        (if (i32.ne (local.get $mask) (i32.const 0))
+          (then
+            (return (i32.sub
+              (i32.add (local.get $cur) (i32.ctz (local.get $mask)))
+              (local.get $off)))))
+        (local.set $cur (i32.add (local.get $cur) (i32.const 16)))
+        (br $vec_continue)))
+    (block $tail_done
+      (loop $tail_continue
+        (br_if $tail_done (i32.eq (local.get $cur) (local.get $end)))
+        (if (i32.eq (i32.load8_u {k} (local.get $cur)) (local.get $byte))
+          (then
+            (return (i32.sub (local.get $cur) (local.get $off)))))
+        (local.set $cur (i32.add (local.get $cur) (i32.const 1)))
+        (br $tail_continue)))
+    (i32.const -1))
+"#,
+        k = k,
+    )
+}
+
+/// min_max_u8: i8x16.min_u / max_u accumulators, horizontal reduce at end.
+/// Returns ((min as i32) << 8) | (max as i32). For len==0 returns
+/// (255 << 8) | 0 — the conventional empty-range sentinel.
+fn simd_min_max(k: u32) -> String {
+    format!(
+        r#"  (func $tvm_simd_min_max_u8_p{k} (export "tvm_simd_min_max_u8_p{k}")
+        (param $off i32) (param $len i32) (result i32)
+    (local $cur i32) (local $end i32) (local $vec_end i32)
+    (local $vmin v128) (local $vmax v128) (local $vec v128)
+    (local $any_vec i32) (local $lo i32) (local $hi i32) (local $b i32)
+    (local.set $cur (local.get $off))
+    (local.set $end (i32.add (local.get $off) (local.get $len)))
+    (local.set $vec_end
+      (i32.add (local.get $off)
+               (i32.and (local.get $len) (i32.const -16))))
+    (local.set $vmin (v128.const i8x16 -1 -1 -1 -1 -1 -1 -1 -1
+                                       -1 -1 -1 -1 -1 -1 -1 -1))
+    (local.set $vmax (v128.const i64x2 0 0))
+    (local.set $lo (i32.const 255))
+    (local.set $hi (i32.const 0))
+    (block $vec_done
+      (loop $vec_continue
+        (br_if $vec_done (i32.eq (local.get $cur) (local.get $vec_end)))
+        (local.set $vec (v128.load {k} (local.get $cur)))
+        (local.set $vmin (i8x16.min_u (local.get $vmin) (local.get $vec)))
+        (local.set $vmax (i8x16.max_u (local.get $vmax) (local.get $vec)))
+        (local.set $any_vec (i32.const 1))
+        (local.set $cur (i32.add (local.get $cur) (i32.const 16)))
+        (br $vec_continue)))
+    (if (i32.eq (local.get $any_vec) (i32.const 1))
+      (then
+        ;; Reduce vmin / vmax across all 16 lanes by extract+scalar-min.
+        (local.set $b (i8x16.extract_lane_u 0 (local.get $vmin)))
+        (if (i32.lt_u (local.get $b) (local.get $lo))
+          (then (local.set $lo (local.get $b))))
+        (local.set $b (i8x16.extract_lane_u 0 (local.get $vmax)))
+        (if (i32.gt_u (local.get $b) (local.get $hi))
+          (then (local.set $hi (local.get $b))))
+        (local.set $b (i8x16.extract_lane_u 1 (local.get $vmin)))
+        (if (i32.lt_u (local.get $b) (local.get $lo))
+          (then (local.set $lo (local.get $b))))
+        (local.set $b (i8x16.extract_lane_u 1 (local.get $vmax)))
+        (if (i32.gt_u (local.get $b) (local.get $hi))
+          (then (local.set $hi (local.get $b))))
+        (local.set $b (i8x16.extract_lane_u 2 (local.get $vmin)))
+        (if (i32.lt_u (local.get $b) (local.get $lo))
+          (then (local.set $lo (local.get $b))))
+        (local.set $b (i8x16.extract_lane_u 2 (local.get $vmax)))
+        (if (i32.gt_u (local.get $b) (local.get $hi))
+          (then (local.set $hi (local.get $b))))
+        (local.set $b (i8x16.extract_lane_u 3 (local.get $vmin)))
+        (if (i32.lt_u (local.get $b) (local.get $lo))
+          (then (local.set $lo (local.get $b))))
+        (local.set $b (i8x16.extract_lane_u 3 (local.get $vmax)))
+        (if (i32.gt_u (local.get $b) (local.get $hi))
+          (then (local.set $hi (local.get $b))))
+        (local.set $b (i8x16.extract_lane_u 4 (local.get $vmin)))
+        (if (i32.lt_u (local.get $b) (local.get $lo))
+          (then (local.set $lo (local.get $b))))
+        (local.set $b (i8x16.extract_lane_u 4 (local.get $vmax)))
+        (if (i32.gt_u (local.get $b) (local.get $hi))
+          (then (local.set $hi (local.get $b))))
+        (local.set $b (i8x16.extract_lane_u 5 (local.get $vmin)))
+        (if (i32.lt_u (local.get $b) (local.get $lo))
+          (then (local.set $lo (local.get $b))))
+        (local.set $b (i8x16.extract_lane_u 5 (local.get $vmax)))
+        (if (i32.gt_u (local.get $b) (local.get $hi))
+          (then (local.set $hi (local.get $b))))
+        (local.set $b (i8x16.extract_lane_u 6 (local.get $vmin)))
+        (if (i32.lt_u (local.get $b) (local.get $lo))
+          (then (local.set $lo (local.get $b))))
+        (local.set $b (i8x16.extract_lane_u 6 (local.get $vmax)))
+        (if (i32.gt_u (local.get $b) (local.get $hi))
+          (then (local.set $hi (local.get $b))))
+        (local.set $b (i8x16.extract_lane_u 7 (local.get $vmin)))
+        (if (i32.lt_u (local.get $b) (local.get $lo))
+          (then (local.set $lo (local.get $b))))
+        (local.set $b (i8x16.extract_lane_u 7 (local.get $vmax)))
+        (if (i32.gt_u (local.get $b) (local.get $hi))
+          (then (local.set $hi (local.get $b))))
+        (local.set $b (i8x16.extract_lane_u 8 (local.get $vmin)))
+        (if (i32.lt_u (local.get $b) (local.get $lo))
+          (then (local.set $lo (local.get $b))))
+        (local.set $b (i8x16.extract_lane_u 8 (local.get $vmax)))
+        (if (i32.gt_u (local.get $b) (local.get $hi))
+          (then (local.set $hi (local.get $b))))
+        (local.set $b (i8x16.extract_lane_u 9 (local.get $vmin)))
+        (if (i32.lt_u (local.get $b) (local.get $lo))
+          (then (local.set $lo (local.get $b))))
+        (local.set $b (i8x16.extract_lane_u 9 (local.get $vmax)))
+        (if (i32.gt_u (local.get $b) (local.get $hi))
+          (then (local.set $hi (local.get $b))))
+        (local.set $b (i8x16.extract_lane_u 10 (local.get $vmin)))
+        (if (i32.lt_u (local.get $b) (local.get $lo))
+          (then (local.set $lo (local.get $b))))
+        (local.set $b (i8x16.extract_lane_u 10 (local.get $vmax)))
+        (if (i32.gt_u (local.get $b) (local.get $hi))
+          (then (local.set $hi (local.get $b))))
+        (local.set $b (i8x16.extract_lane_u 11 (local.get $vmin)))
+        (if (i32.lt_u (local.get $b) (local.get $lo))
+          (then (local.set $lo (local.get $b))))
+        (local.set $b (i8x16.extract_lane_u 11 (local.get $vmax)))
+        (if (i32.gt_u (local.get $b) (local.get $hi))
+          (then (local.set $hi (local.get $b))))
+        (local.set $b (i8x16.extract_lane_u 12 (local.get $vmin)))
+        (if (i32.lt_u (local.get $b) (local.get $lo))
+          (then (local.set $lo (local.get $b))))
+        (local.set $b (i8x16.extract_lane_u 12 (local.get $vmax)))
+        (if (i32.gt_u (local.get $b) (local.get $hi))
+          (then (local.set $hi (local.get $b))))
+        (local.set $b (i8x16.extract_lane_u 13 (local.get $vmin)))
+        (if (i32.lt_u (local.get $b) (local.get $lo))
+          (then (local.set $lo (local.get $b))))
+        (local.set $b (i8x16.extract_lane_u 13 (local.get $vmax)))
+        (if (i32.gt_u (local.get $b) (local.get $hi))
+          (then (local.set $hi (local.get $b))))
+        (local.set $b (i8x16.extract_lane_u 14 (local.get $vmin)))
+        (if (i32.lt_u (local.get $b) (local.get $lo))
+          (then (local.set $lo (local.get $b))))
+        (local.set $b (i8x16.extract_lane_u 14 (local.get $vmax)))
+        (if (i32.gt_u (local.get $b) (local.get $hi))
+          (then (local.set $hi (local.get $b))))
+        (local.set $b (i8x16.extract_lane_u 15 (local.get $vmin)))
+        (if (i32.lt_u (local.get $b) (local.get $lo))
+          (then (local.set $lo (local.get $b))))
+        (local.set $b (i8x16.extract_lane_u 15 (local.get $vmax)))
+        (if (i32.gt_u (local.get $b) (local.get $hi))
+          (then (local.set $hi (local.get $b))))))
+    (block $tail_done
+      (loop $tail_continue
+        (br_if $tail_done (i32.eq (local.get $cur) (local.get $end)))
+        (local.set $b (i32.load8_u {k} (local.get $cur)))
+        (if (i32.lt_u (local.get $b) (local.get $lo))
+          (then (local.set $lo (local.get $b))))
+        (if (i32.gt_u (local.get $b) (local.get $hi))
+          (then (local.set $hi (local.get $b))))
+        (local.set $cur (i32.add (local.get $cur) (i32.const 1)))
+        (br $tail_continue)))
+    (i32.or
+      (i32.shl (local.get $lo) (i32.const 8))
+      (local.get $hi)))
+"#,
+        k = k,
+    )
+}
+
 pub(crate) fn emit_specialized_copy_helpers(n_pools: u32) -> String {
     let mut s = String::new();
     for k in 0..n_pools {
@@ -232,6 +676,50 @@ pub(crate) fn emit_specialized_copy_helpers(n_pools: u32) -> String {
             "  (func $tvm_copy_from_default_p{k} (export \"tvm_copy_from_default_p{k}\")\n        \
              (param $dst_off i32) (param $src_off i32) (param $len i32)\n    \
              (memory.copy {k} 0 (local.get $dst_off) (local.get $src_off) (local.get $len)))\n",
+            k = k,
+        ));
+    }
+    s
+}
+
+/// Specialized typed load/store helpers — one per pool, no dispatch.
+/// Mirrors the specialized copy helpers but for single typed
+/// load/store ops. Useful in tight per-element loops where the pool
+/// is already resolved.
+///
+/// Per pool K, emits:
+///   tvm_load_u8_p{K}, tvm_load_u32_p{K}, tvm_load_i64_p{K}
+///   tvm_store_u8_p{K}, tvm_store_u32_p{K}, tvm_store_i64_p{K}
+///
+/// Each is a single static load/store with the memory immediate baked
+/// in. Skips the BST dispatch entirely.
+pub(crate) fn emit_specialized_typed_helpers(n_pools: u32) -> String {
+    let mut s = String::new();
+    for k in 0..n_pools {
+        // Loads.
+        s.push_str(&format!(
+            "  (func $tvm_load_u8_p{k} (export \"tvm_load_u8_p{k}\") (param $off i32) (result i32) (i32.load8_u {k} (local.get $off)))\n",
+            k = k,
+        ));
+        s.push_str(&format!(
+            "  (func $tvm_load_u32_p{k} (export \"tvm_load_u32_p{k}\") (param $off i32) (result i32) (i32.load {k} (local.get $off)))\n",
+            k = k,
+        ));
+        s.push_str(&format!(
+            "  (func $tvm_load_i64_p{k} (export \"tvm_load_i64_p{k}\") (param $off i32) (result i64) (i64.load {k} (local.get $off)))\n",
+            k = k,
+        ));
+        // Stores.
+        s.push_str(&format!(
+            "  (func $tvm_store_u8_p{k} (export \"tvm_store_u8_p{k}\") (param $off i32) (param $v i32) (i32.store8 {k} (local.get $off) (local.get $v)))\n",
+            k = k,
+        ));
+        s.push_str(&format!(
+            "  (func $tvm_store_u32_p{k} (export \"tvm_store_u32_p{k}\") (param $off i32) (param $v i32) (i32.store {k} (local.get $off) (local.get $v)))\n",
+            k = k,
+        ));
+        s.push_str(&format!(
+            "  (func $tvm_store_i64_p{k} (export \"tvm_store_i64_p{k}\") (param $off i32) (param $v i64) (i64.store {k} (local.get $off) (local.get $v)))\n",
             k = k,
         ));
     }
@@ -423,6 +911,25 @@ mod tests {
         for n in [1u32, 4, 16] {
             let body = emit_specialized_simd_kernels(n);
             wat::parse_str(&wrap(n, &body)).expect("parse");
+        }
+    }
+
+    #[test]
+    fn specialized_typed_helpers_parse() {
+        for n in [1u32, 2, 4, 16] {
+            let body = emit_specialized_typed_helpers(n);
+            wat::parse_str(&wrap(n, &body)).expect("parse");
+        }
+    }
+
+    #[test]
+    fn simd_reducers_parse() {
+        for n in [1u32, 2, 4, 8] {
+            let body = emit_specialized_simd_reducers(n);
+            wat::parse_str(&wrap(n, &body)).unwrap_or_else(|e| {
+                panic!("simd reducers n={} failed to parse: {}\n--- module ---\n{}",
+                    n, e, wrap(n, &body))
+            });
         }
     }
 
