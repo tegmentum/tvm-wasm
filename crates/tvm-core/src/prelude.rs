@@ -6,6 +6,7 @@ pub use crate::backing::{BackingStore, FileBackingStore, VecBackedRegion};
 pub use crate::error::{
     set_last_error_context, take_last_error_context, ErrorContext, Result, TvmError,
 };
+pub use crate::facade::{TvmFacade, TvmSpill};
 pub use crate::handle::Handle;
 pub use crate::region::{Region, RegionKind};
 pub use crate::residency::Residency;

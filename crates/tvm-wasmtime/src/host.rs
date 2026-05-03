@@ -19,8 +19,9 @@ impl CachedGuestMemory {
 
 use tvm_core::{
     AllocatorKind, BackingStore, DynBackingStore, FileBackingStore,
-    Handle as CoreHandle, RegionDirectory, RegionKind as CoreRegionKind,
-    ResolveCache, ResolveHit, Residency as CoreResidency, TvmError as CoreError,
+    Handle as CoreHandle, Region as CoreRegion, RegionDirectory,
+    RegionKind as CoreRegionKind, ResolveCache, ResolveHit,
+    Residency as CoreResidency, TvmError as CoreError, TvmFacade, TvmSpill,
     VecBackedRegion,
 };
 
@@ -82,6 +83,25 @@ use crate::bindings::tvm::memory::types::{
     Residency, TvmError,
 };
 
+/// Host-side TVM. The directory + cache + (optional) backing store
+/// live together in one type for ergonomic embedder use, but the
+/// **spill capability is logically separate from the core TVM
+/// interface**:
+///
+///   - `impl TvmFacade for TvmHost` covers the deployment-agnostic
+///     ops (create / alloc / read / write / pin / unpin / region_info).
+///   - `impl TvmSpill for TvmHost` covers spill/load — only meaningful
+///     when `backing` is configured.
+///
+/// Embedders who don't want spill can simply not configure a backing
+/// (`TvmHost::new()` instead of `TvmHost::with_backing(...)`); the
+/// `TvmSpill` calls will return `BackingStore("no backing store
+/// configured")`. Code that never calls spill never touches the
+/// backing field.
+///
+/// Code generic over `T: TvmFacade` works against `TvmHost` without
+/// caring whether spill is configured — that's the architectural
+/// separation. Spill is layered above the facade.
 pub struct TvmHost {
     pub directory: RegionDirectory<VecBackedRegion>,
     pub backing: Option<DynBackingStore>,
@@ -395,6 +415,61 @@ impl TvmHost {
 impl AsMut<TvmHost> for TvmHost {
     fn as_mut(&mut self) -> &mut TvmHost {
         self
+    }
+}
+
+// ---------- TvmFacade: deployment-agnostic interface ----------
+//
+// Code generic over `T: TvmFacade` works against TvmHost the same way
+// it works against guest-side `GuestTvm`. The facade only covers
+// deployment-agnostic operations; spill / runtime / multi-store /
+// imports stay on the concrete type.
+
+impl TvmFacade for TvmHost {
+    fn create_region(
+        &mut self,
+        kind: CoreRegionKind,
+        capacity: u32,
+    ) -> tvm_core::Result<u16> {
+        TvmHost::create_region(self, kind, capacity)
+    }
+    fn alloc(&mut self, region: u16, size: u32) -> tvm_core::Result<CoreHandle> {
+        TvmHost::alloc(self, region, size)
+    }
+    fn dealloc(&mut self, handle: CoreHandle) -> tvm_core::Result<()> {
+        self.directory.dealloc(handle)
+    }
+    fn read(&mut self, handle: CoreHandle, buf: &mut [u8]) -> tvm_core::Result<()> {
+        self.read_bytes(handle, buf)
+    }
+    fn write(&mut self, handle: CoreHandle, data: &[u8]) -> tvm_core::Result<()> {
+        self.write_bytes(handle, data)
+    }
+    fn pin(&mut self, region: u16) -> tvm_core::Result<()> {
+        self.directory.pin(region)
+    }
+    fn unpin(&mut self, region: u16) -> tvm_core::Result<()> {
+        self.directory.unpin(region)
+    }
+    fn region_info(&self, region: u16) -> tvm_core::Result<CoreRegion> {
+        self.directory.region_info(region).copied()
+    }
+}
+
+impl TvmSpill for TvmHost {
+    fn spill(&mut self, region: u16) -> tvm_core::Result<()> {
+        let TvmHost { directory, backing, .. } = self;
+        let backing = backing.as_mut().ok_or_else(|| {
+            CoreError::BackingStore("no backing store configured".into())
+        })?;
+        directory.spill_region(region, backing)
+    }
+    fn load(&mut self, region: u16) -> tvm_core::Result<()> {
+        let TvmHost { directory, backing, .. } = self;
+        let backing = backing.as_mut().ok_or_else(|| {
+            CoreError::BackingStore("no backing store configured".into())
+        })?;
+        directory.load_region(region, backing)
     }
 }
 

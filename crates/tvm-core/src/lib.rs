@@ -33,6 +33,7 @@ pub mod prelude;
 pub mod debug;
 pub mod directory;
 mod directory_slices;
+pub mod facade;
 pub mod error;
 pub mod external;
 pub mod handle;
@@ -50,6 +51,7 @@ pub use backing::{
     BackingStore, DynBackingStore, FileBackingStore, SingleFileBackingStore, VecBackedRegion,
 };
 pub use directory::{HandleRemap, MemoryRegion, RegionDirectory, RegionEntry};
+pub use facade::{TvmFacade, TvmSpill};
 pub use error::{
     set_last_error_context, take_last_error_context, ErrorContext, Result, TvmError,
 };
