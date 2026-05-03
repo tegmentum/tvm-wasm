@@ -5,7 +5,7 @@
 
 use std::sync::Mutex;
 use tvm_guest_mm::{
-    AllocatorKind, Dispatch, GuestTvm, Pool, RegionKind, Result, TvmError,
+    AllocatorKind, FnDispatch, GuestTvm, Pool, RegionKind, Result, TvmError,
 };
 
 // Stub backing for the test — one Vec<u8> per pool. The intra-pool
@@ -60,11 +60,10 @@ fn build(n_pools: usize, capacity: u32) -> GuestTvm {
     let descs: Vec<Pool> = (0..n_pools as u32)
         .map(|i| Pool { memory_index: i, used: 0, capacity })
         .collect();
-    let mut g = GuestTvm::new(descs, Dispatch {
-        read_bytes: stub_read,
-        write_bytes: stub_write,
-        intra_pool_copy: stub_intra_pool_copy,
-    });
+    let mut g = GuestTvm::new(
+        descs,
+        FnDispatch::new(stub_read, stub_write, stub_intra_pool_copy),
+    );
     g.default_allocator = AllocatorKind::Freelist;
     g
 }

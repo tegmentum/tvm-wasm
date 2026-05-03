@@ -191,7 +191,7 @@ impl GuestDirectory {
     pub fn compact_region(
         &mut self,
         region_id: u16,
-        dispatch: &Dispatch,
+        dispatch: &dyn Dispatch,
     ) -> Result<HandleRemap> {
         let entry = self.entry_mut(region_id)?;
         if entry.meta.pinned {
@@ -212,7 +212,7 @@ impl GuestDirectory {
         let mut cursor: u32 = 0;
         for (old_off, size) in &blocks {
             if *old_off != cursor {
-                (dispatch.intra_pool_copy)(
+                dispatch.intra_pool_copy(
                     pool_index,
                     base_offset + cursor,
                     base_offset + *old_off,

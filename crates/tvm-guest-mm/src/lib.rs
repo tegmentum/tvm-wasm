@@ -82,7 +82,7 @@ mod multi;
 pub mod wasi_spill;
 
 pub use directory::{GuestDirectory, Pool};
-pub use facade::{Dispatch, GuestTvm};
+pub use facade::{Dispatch, FnDispatch, GuestTvm};
 pub use module::{tvm_guest_mm_module_template, ModuleParams};
 pub use multi::{MultiGuestTvm, ShardId};
 pub use wasi_spill::{emit_wasi_spill_helpers, tvm_guest_mm_module_with_wasi_spill};

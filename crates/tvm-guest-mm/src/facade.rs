@@ -38,11 +38,12 @@ pub struct GuestTvm {
     /// Default allocator used by `create_region`. Mirrors `TvmHost`'s
     /// default for parity.
     pub default_allocator: AllocatorKind,
-    /// Function pointers to the dispatch helpers. In a real guest these
-    /// come from `extern "C"` declarations against the WAT-generated
-    /// functions in the same module. In unit tests on the host they
-    /// can be stubbed.
-    dispatch: Dispatch,
+    /// Boxed `Dispatch` impl. In a real guest the impl forwards to
+    /// the WAT-defined helpers in the same module; in tests it can
+    /// hold mutable state directly. `Box<dyn Dispatch>` lets callers
+    /// pick any impl without leaking a type parameter through every
+    /// API surface.
+    dispatch: Box<dyn Dispatch>,
     /// Single-entry resolve cache. Hot loop pattern is "many ops on the
     /// same region"; we cache the last successful resolve and skip the
     /// directory lookup on subsequent same-region accesses with the
@@ -70,22 +71,88 @@ impl ResolveCache {
     };
 }
 
-/// Shape of the dispatch function table. Each function is a thin
-/// adapter over a wasm-level dispatcher. The Rust-side code calls
-/// these by function pointer so the facade can be tested host-side
-/// without a real wasm runtime.
-pub struct Dispatch {
-    /// Read bytes from `(pool, offset)` into `dst`. Implemented on the
-    /// guest side by N calls to `tvm_load_u8` or one bulk
-    /// `tvm_copy_to_default` (then a memcpy from default mem to dst).
-    pub read_bytes: fn(pool: u32, offset: u32, dst: &mut [u8]) -> Result<()>,
-    /// Write bytes to `(pool, offset)`.
-    pub write_bytes: fn(pool: u32, offset: u32, src: &[u8]) -> Result<()>,
+/// Trait implemented by anything that can dispatch reads, writes, and
+/// intra-pool copies against the guest's memory pools.
+///
+/// In a real wasm guest the impl forwards to the WAT-defined helpers
+/// (`tvm_copy_to_default`, `tvm_copy_from_default`,
+/// `tvm_intra_pool_copy_p{K}`). In tests, an impl can hold mutable
+/// state directly — no static globals needed.
+///
+/// Methods take `&self` (not `&mut self`) so multiple operations
+/// against the same dispatcher can be issued from a single
+/// `&mut GuestTvm`. Implementations that need internal mutability
+/// should use `Cell`/`RefCell` or a `Mutex`.
+pub trait Dispatch: Send + Sync {
+    /// Read bytes from `(pool, offset)` into `dst`.
+    fn read_bytes(&self, pool: u32, offset: u32, dst: &mut [u8]) -> Result<()>;
+
+    /// Write bytes to `(pool, offset)` from `src`.
+    fn write_bytes(&self, pool: u32, offset: u32, src: &[u8]) -> Result<()>;
+
     /// Copy `len` bytes from `src_off` to `dst_off` within the same
     /// pool. Used by `compact_region`. Source and destination may
     /// overlap (wasm memory.copy semantics).
-    pub intra_pool_copy:
-        fn(pool: u32, dst_off: u32, src_off: u32, len: u32) -> Result<()>,
+    fn intra_pool_copy(
+        &self,
+        pool: u32,
+        dst_off: u32,
+        src_off: u32,
+        len: u32,
+    ) -> Result<()>;
+}
+
+/// Adapter that wraps three plain function pointers / closures into a
+/// `Dispatch` impl. Lets existing call sites that constructed
+/// `Dispatch` as a struct-literal port to the trait with minimal
+/// churn.
+///
+/// Closures must be `Send + Sync` if you want to share `GuestTvm`
+/// across threads (wasm guests are single-threaded today, so this
+/// usually doesn't matter).
+pub struct FnDispatch<R, W, C>
+where
+    R: Fn(u32, u32, &mut [u8]) -> Result<()> + Send + Sync,
+    W: Fn(u32, u32, &[u8]) -> Result<()> + Send + Sync,
+    C: Fn(u32, u32, u32, u32) -> Result<()> + Send + Sync,
+{
+    read: R,
+    write: W,
+    copy: C,
+}
+
+impl<R, W, C> FnDispatch<R, W, C>
+where
+    R: Fn(u32, u32, &mut [u8]) -> Result<()> + Send + Sync,
+    W: Fn(u32, u32, &[u8]) -> Result<()> + Send + Sync,
+    C: Fn(u32, u32, u32, u32) -> Result<()> + Send + Sync,
+{
+    pub fn new(read: R, write: W, copy: C) -> Self {
+        Self { read, write, copy }
+    }
+}
+
+impl<R, W, C> Dispatch for FnDispatch<R, W, C>
+where
+    R: Fn(u32, u32, &mut [u8]) -> Result<()> + Send + Sync,
+    W: Fn(u32, u32, &[u8]) -> Result<()> + Send + Sync,
+    C: Fn(u32, u32, u32, u32) -> Result<()> + Send + Sync,
+{
+    fn read_bytes(&self, pool: u32, offset: u32, dst: &mut [u8]) -> Result<()> {
+        (self.read)(pool, offset, dst)
+    }
+    fn write_bytes(&self, pool: u32, offset: u32, src: &[u8]) -> Result<()> {
+        (self.write)(pool, offset, src)
+    }
+    fn intra_pool_copy(
+        &self,
+        pool: u32,
+        dst_off: u32,
+        src_off: u32,
+        len: u32,
+    ) -> Result<()> {
+        (self.copy)(pool, dst_off, src_off, len)
+    }
 }
 
 impl GuestTvm {
@@ -94,7 +161,7 @@ impl GuestTvm {
     /// Defaults to `AllocatorKind::Bump`; use `with_default_allocator`
     /// for `Freelist` (compactable, fragments) or `Slab` (uniform
     /// slot sizes).
-    pub fn new(pools: Vec<Pool>, dispatch: Dispatch) -> Self {
+    pub fn new<D: Dispatch + 'static>(pools: Vec<Pool>, dispatch: D) -> Self {
         Self::with_default_allocator(pools, dispatch, AllocatorKind::Bump)
     }
 
@@ -107,15 +174,15 @@ impl GuestTvm {
     ///   with allocate-and-free churn.
     /// - `Slab`: uniform slot sizes; no fragmentation by construction.
     ///   Choose when objects are all the same size.
-    pub fn with_default_allocator(
+    pub fn with_default_allocator<D: Dispatch + 'static>(
         pools: Vec<Pool>,
-        dispatch: Dispatch,
+        dispatch: D,
         default_allocator: AllocatorKind,
     ) -> Self {
         Self {
             directory: GuestDirectory::new(pools),
             default_allocator,
-            dispatch,
+            dispatch: Box::new(dispatch),
             cache: ResolveCache::EMPTY,
         }
     }
@@ -149,7 +216,7 @@ impl GuestTvm {
         if self.cache.region_id == region_id {
             self.cache = ResolveCache::EMPTY;
         }
-        self.directory.compact_region(region_id, &self.dispatch)
+        self.directory.compact_region(region_id, &*self.dispatch)
     }
 
     /// Cache-aware resolve. Returns the absolute (pool_index,
@@ -209,7 +276,7 @@ impl TvmFacade for GuestTvm {
             .checked_add(buf.len() as u32)
             .ok_or(TvmError::OutOfBounds)?;
         let _ = end;
-        (self.dispatch.read_bytes)(pool, off, buf)
+        self.dispatch.read_bytes(pool, off, buf)
     }
 
     fn write(&mut self, handle: Handle, data: &[u8]) -> Result<()> {
@@ -218,7 +285,7 @@ impl TvmFacade for GuestTvm {
             .checked_add(data.len() as u32)
             .ok_or(TvmError::OutOfBounds)?;
         let _ = end;
-        (self.dispatch.write_bytes)(pool, off, data)
+        self.dispatch.write_bytes(pool, off, data)
     }
 
     fn pin(&mut self, region: u16) -> Result<()> {
@@ -298,11 +365,7 @@ mod tests {
             .collect();
         GuestTvm::new(
             pool_descs,
-            Dispatch {
-                read_bytes: stub_read,
-                write_bytes: stub_write,
-                intra_pool_copy: stub_intra_pool_copy,
-            },
+            FnDispatch::new(stub_read, stub_write, stub_intra_pool_copy),
         )
     }
 
@@ -328,11 +391,7 @@ mod tests {
             .collect();
         let mut g = GuestTvm::with_default_allocator(
             pool_descs,
-            Dispatch {
-                read_bytes: stub_read,
-                write_bytes: stub_write,
-                intra_pool_copy: stub_intra_pool_copy,
-            },
+            FnDispatch::new(stub_read, stub_write, stub_intra_pool_copy),
             AllocatorKind::Freelist,
         );
         // Region inherits the default; compaction must succeed (Bump

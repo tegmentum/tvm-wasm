@@ -197,7 +197,7 @@ impl TvmFacade for MultiGuestTvm {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::facade::Dispatch;
+    use crate::facade::FnDispatch;
     use crate::directory::Pool;
     use std::sync::Mutex;
 
@@ -246,11 +246,7 @@ mod tests {
                     .collect();
                 GuestTvm::new(
                     pool_descs,
-                    Dispatch {
-                        read_bytes: stub_read,
-                        write_bytes: stub_write,
-                        intra_pool_copy: stub_intra_pool_copy,
-                    },
+                    FnDispatch::new(stub_read, stub_write, stub_intra_pool_copy),
                 )
             })
             .collect();

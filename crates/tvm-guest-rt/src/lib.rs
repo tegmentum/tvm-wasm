@@ -47,6 +47,33 @@ mod raw {
             len: i32,
         ) -> i32;
         pub fn last_error() -> i32;
+
+        // ---- reducer imports ----
+        // Algebraic primitives that fold a region's bytes to a scalar
+        // result on the host side. The host implementations are
+        // autovec'd Rust hitting native SIMD bandwidth; calling these
+        // collapses the classic "read into guest memory then loop"
+        // pattern into a single trampoline returning the answer.
+
+        pub fn sum_u8(handle: i64, len: i32) -> i64;
+        pub fn sum_u32_le(handle: i64, len: i32) -> i64;
+        pub fn max_u32_le(handle: i64, len: i32) -> i64;
+        pub fn count_byte(handle: i64, len: i32, byte: i32) -> i32;
+        pub fn count_in_range(handle: i64, len: i32, lo: i32, hi: i32) -> i32;
+        pub fn popcount(handle: i64, len: i32) -> i64;
+        pub fn min_max_u8(handle: i64, len: i32) -> i32;
+        pub fn find_byte(handle: i64, len: i32, byte: i32) -> i32;
+        pub fn index_of(handle: i64, len: i32, needle_ptr: i32, needle_len: i32) -> i32;
+        pub fn eq(packed_a: i64, packed_b: i64, len: i32) -> i32;
+        pub fn lex_cmp(packed_a: i64, packed_b: i64, len: i32) -> i32;
+        pub fn hash_fnv1a(handle: i64, len: i32) -> i64;
+        pub fn and_fold_u8(handle: i64, len: i32) -> i32;
+        pub fn or_fold_u8(handle: i64, len: i32) -> i32;
+        pub fn xor_fold_u8(handle: i64, len: i32) -> i32;
+        pub fn fill(handle: i64, len: i32, byte: i32) -> i32;
+        pub fn xor_with_byte(handle: i64, len: i32, byte: i32) -> i32;
+        pub fn xor_into_region(packed_src: i64, packed_dst: i64, len: i32) -> i32;
+        pub fn byte_histogram(handle: i64, len: i32, out_ptr: i32) -> i32;
     }
 }
 
@@ -59,6 +86,26 @@ mod raw {
     pub unsafe fn read_gather(_: i64, _: i32, _: i32, _: i32, _: i32) -> i32 { 0 }
     pub unsafe fn copy_region(_: i32, _: i32, _: i32, _: i32, _: i32) -> i32 { 0 }
     pub unsafe fn last_error() -> i32 { 0 }
+
+    pub unsafe fn sum_u8(_: i64, _: i32) -> i64 { 0 }
+    pub unsafe fn sum_u32_le(_: i64, _: i32) -> i64 { 0 }
+    pub unsafe fn max_u32_le(_: i64, _: i32) -> i64 { 0 }
+    pub unsafe fn count_byte(_: i64, _: i32, _: i32) -> i32 { 0 }
+    pub unsafe fn count_in_range(_: i64, _: i32, _: i32, _: i32) -> i32 { 0 }
+    pub unsafe fn popcount(_: i64, _: i32) -> i64 { 0 }
+    pub unsafe fn min_max_u8(_: i64, _: i32) -> i32 { 0 }
+    pub unsafe fn find_byte(_: i64, _: i32, _: i32) -> i32 { -1 }
+    pub unsafe fn index_of(_: i64, _: i32, _: i32, _: i32) -> i32 { -1 }
+    pub unsafe fn eq(_: i64, _: i64, _: i32) -> i32 { 0 }
+    pub unsafe fn lex_cmp(_: i64, _: i64, _: i32) -> i32 { 0 }
+    pub unsafe fn hash_fnv1a(_: i64, _: i32) -> i64 { 0 }
+    pub unsafe fn and_fold_u8(_: i64, _: i32) -> i32 { 0 }
+    pub unsafe fn or_fold_u8(_: i64, _: i32) -> i32 { 0 }
+    pub unsafe fn xor_fold_u8(_: i64, _: i32) -> i32 { 0 }
+    pub unsafe fn fill(_: i64, _: i32, _: i32) -> i32 { 0 }
+    pub unsafe fn xor_with_byte(_: i64, _: i32, _: i32) -> i32 { 0 }
+    pub unsafe fn xor_into_region(_: i64, _: i64, _: i32) -> i32 { 0 }
+    pub unsafe fn byte_histogram(_: i64, _: i32, _: i32) -> i32 { 0 }
 }
 
 /// Mirrors `tvm:memory/types.region-kind`. Discriminants must match the
@@ -154,6 +201,217 @@ impl RegionPtr {
 
     pub fn dealloc(self) -> Result<()> {
         let code = unsafe { raw::dealloc(self.packed) };
+        check(code)
+    }
+}
+
+// ---------- Reducer methods on RegionPtr ----------
+//
+// These wrap the raw `tvm.<op>` imports added on the host side.
+// Each is a single trampoline that returns the scalar (or writes to
+// guest memory in the histogram case). Performance characteristics:
+// the host implementations autovec to native SIMD; ~12–16 GiB/s on
+// modern x86/aarch64 for byte-level reductions. See
+// `tvm-wasmtime/benches/reducer_imports.rs` for measured speedups
+// against the classic "read into guest, scalar loop" pattern.
+
+impl RegionPtr {
+    /// Sum every byte in the next `len` bytes from this pointer as a
+    /// u64 (no overflow possible — max is `len × 255`).
+    pub fn sum_u8(self, len: u32) -> Result<u64> {
+        let v = unsafe { raw::sum_u8(self.packed, len as i32) };
+        if v < 0 {
+            Err(Error::from_code(unsafe { raw::last_error() }))
+        } else {
+            Ok(v as u64)
+        }
+    }
+
+    /// Sum of `len/4` little-endian u32 lanes. `len` must be a
+    /// multiple of 4. Returns the low 60 bits of the sum (signed
+    /// semantics; the host returns -1 on error).
+    pub fn sum_u32_le(self, len: u32) -> Result<u64> {
+        let v = unsafe { raw::sum_u32_le(self.packed, len as i32) };
+        if v < 0 {
+            Err(Error::from_code(unsafe { raw::last_error() }))
+        } else {
+            Ok(v as u64)
+        }
+    }
+
+    /// Max of `len/4` little-endian u32 lanes. Returns `None` when
+    /// `len == 0`. `len` must be a multiple of 4.
+    pub fn max_u32_le(self, len: u32) -> Result<Option<u32>> {
+        let v = unsafe { raw::max_u32_le(self.packed, len as i32) };
+        match v {
+            -2 => Ok(None),
+            -1 => Err(Error::from_code(unsafe { raw::last_error() })),
+            v => Ok(Some(v as u32)),
+        }
+    }
+
+    /// Count occurrences of `byte` in the next `len` bytes.
+    pub fn count_byte(self, len: u32, byte: u8) -> Result<u32> {
+        let v = unsafe { raw::count_byte(self.packed, len as i32, byte as i32) };
+        if v < 0 {
+            Err(Error::from_code(unsafe { raw::last_error() }))
+        } else {
+            Ok(v as u32)
+        }
+    }
+
+    /// Count bytes in `[lo, hi]` (inclusive on both ends).
+    pub fn count_in_range(self, len: u32, lo: u8, hi: u8) -> Result<u32> {
+        let v = unsafe {
+            raw::count_in_range(self.packed, len as i32, lo as i32, hi as i32)
+        };
+        if v < 0 {
+            Err(Error::from_code(unsafe { raw::last_error() }))
+        } else {
+            Ok(v as u32)
+        }
+    }
+
+    /// Total set bits across `len` bytes.
+    pub fn popcount(self, len: u32) -> Result<u64> {
+        let v = unsafe { raw::popcount(self.packed, len as i32) };
+        if v < 0 {
+            Err(Error::from_code(unsafe { raw::last_error() }))
+        } else {
+            Ok(v as u64)
+        }
+    }
+
+    /// Min and max of `len` bytes. Returns `(min, max)`.
+    /// `len == 0` yields the conventional sentinel `(255, 0)`.
+    pub fn min_max_u8(self, len: u32) -> Result<(u8, u8)> {
+        let packed = unsafe { raw::min_max_u8(self.packed, len as i32) };
+        if packed < 0 {
+            Err(Error::from_code(unsafe { raw::last_error() }))
+        } else {
+            let lo = ((packed >> 8) & 0xff) as u8;
+            let hi = (packed & 0xff) as u8;
+            Ok((lo, hi))
+        }
+    }
+
+    /// First offset (relative to this pointer) where `byte` occurs in
+    /// the next `len` bytes, or `None`.
+    pub fn find_byte(self, len: u32, byte: u8) -> Result<Option<u32>> {
+        let v = unsafe { raw::find_byte(self.packed, len as i32, byte as i32) };
+        match v {
+            -1 => Ok(None),
+            -2 => Err(Error::from_code(unsafe { raw::last_error() })),
+            v => Ok(Some(v as u32)),
+        }
+    }
+
+    /// First offset where `needle` occurs in the next `len` bytes, or
+    /// `None`. Needle length capped at 4096 by the host.
+    pub fn index_of(self, len: u32, needle: &[u8]) -> Result<Option<u32>> {
+        let v = unsafe {
+            raw::index_of(
+                self.packed,
+                len as i32,
+                needle.as_ptr() as i32,
+                needle.len() as i32,
+            )
+        };
+        match v {
+            -1 => Ok(None),
+            -2 => Err(Error::from_code(unsafe { raw::last_error() })),
+            v => Ok(Some(v as u32)),
+        }
+    }
+
+    /// Compare `len` bytes between two pointers; `true` iff equal.
+    pub fn eq(self, other: RegionPtr, len: u32) -> Result<bool> {
+        let v = unsafe { raw::eq(self.packed, other.packed, len as i32) };
+        match v {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err(Error::from_code(unsafe { raw::last_error() })),
+        }
+    }
+
+    /// Lexicographic compare; returns `Ordering`.
+    pub fn lex_cmp(self, other: RegionPtr, len: u32) -> Result<core::cmp::Ordering> {
+        let v = unsafe { raw::lex_cmp(self.packed, other.packed, len as i32) };
+        match v {
+            -1 => Ok(core::cmp::Ordering::Less),
+            0 => Ok(core::cmp::Ordering::Equal),
+            1 => Ok(core::cmp::Ordering::Greater),
+            _ => Err(Error::from_code(unsafe { raw::last_error() })),
+        }
+    }
+
+    /// FNV-1a 64-bit hash. Note: scalar loop, ~3 ns/byte. Use a real
+    /// digest crate over a host-side bulk read for high throughput.
+    pub fn hash_fnv1a(self, len: u32) -> Result<u64> {
+        // Returns 0 on error; check last_error to disambiguate from a
+        // legitimate hash of 0 (rare). Caller tolerant of the rare
+        // collision on the error path can ignore last_error.
+        let v = unsafe { raw::hash_fnv1a(self.packed, len as i32) };
+        Ok(v as u64)
+    }
+
+    /// Bitwise AND of every byte. Useful for "all-bits-cleared" masks.
+    pub fn and_fold_u8(self, len: u32) -> Result<u8> {
+        let v = unsafe { raw::and_fold_u8(self.packed, len as i32) };
+        if v < 0 {
+            Err(Error::from_code(unsafe { raw::last_error() }))
+        } else {
+            Ok((v & 0xff) as u8)
+        }
+    }
+
+    /// Bitwise OR of every byte. Useful for "any-bits-set" masks.
+    pub fn or_fold_u8(self, len: u32) -> Result<u8> {
+        let v = unsafe { raw::or_fold_u8(self.packed, len as i32) };
+        if v < 0 {
+            Err(Error::from_code(unsafe { raw::last_error() }))
+        } else {
+            Ok((v & 0xff) as u8)
+        }
+    }
+
+    /// XOR of every byte (parity / lightweight checksum).
+    pub fn xor_fold_u8(self, len: u32) -> Result<u8> {
+        let v = unsafe { raw::xor_fold_u8(self.packed, len as i32) };
+        if v < 0 {
+            Err(Error::from_code(unsafe { raw::last_error() }))
+        } else {
+            Ok((v & 0xff) as u8)
+        }
+    }
+
+    /// Set every byte in `[ptr, ptr + len)` to `value`. memset-style.
+    pub fn fill(self, len: u32, value: u8) -> Result<()> {
+        let code = unsafe { raw::fill(self.packed, len as i32, value as i32) };
+        check(code)
+    }
+
+    /// XOR every byte in `[ptr, ptr + len)` with `value`. In-place.
+    pub fn xor_with_byte(self, len: u32, value: u8) -> Result<()> {
+        let code = unsafe { raw::xor_with_byte(self.packed, len as i32, value as i32) };
+        check(code)
+    }
+
+    /// XOR `len` bytes from `src` into the same range starting at this
+    /// pointer (`*self ^= *src`). Errors if both pointers refer to the
+    /// same region.
+    pub fn xor_from(self, src: RegionPtr, len: u32) -> Result<()> {
+        let code = unsafe { raw::xor_into_region(src.packed, self.packed, len as i32) };
+        check(code)
+    }
+
+    /// Byte-frequency histogram. Writes 256 little-endian u32s
+    /// (1024 bytes total) into `out`, where `out[i]` is the count of
+    /// bytes equal to `i`.
+    pub fn byte_histogram(self, len: u32, out: &mut [u8; 1024]) -> Result<()> {
+        let code = unsafe {
+            raw::byte_histogram(self.packed, len as i32, out.as_mut_ptr() as i32)
+        };
         check(code)
     }
 }

@@ -31,7 +31,7 @@ fn library_workload_against_tvm_host() {
 #[test]
 fn library_workload_against_guest_tvm() {
     use std::sync::Mutex;
-    use tvm_guest_mm::{Dispatch, GuestTvm, Pool};
+    use tvm_guest_mm::{FnDispatch, GuestTvm, Pool};
 
     // Stub backing for the guest-side dispatch (host-side test).
     static STUB: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
@@ -65,11 +65,7 @@ fn library_workload_against_guest_tvm() {
         .collect();
     let mut guest = GuestTvm::new(
         pools,
-        Dispatch {
-            read_bytes: stub_read,
-            write_bytes: stub_write,
-            intra_pool_copy: stub_intra_pool_copy,
-        },
+        FnDispatch::new(stub_read, stub_write, stub_intra_pool_copy),
     );
 
     let payload: Vec<u8> = (0..=63u8).collect();
@@ -97,7 +93,7 @@ fn lifecycle_workload_against_both() {
     lifecycle_workload(&mut host).unwrap();
 
     // Guest-side variant — same code path.
-    use tvm_guest_mm::{Dispatch, GuestTvm, Pool};
+    use tvm_guest_mm::{FnDispatch, GuestTvm, Pool};
     fn noop_read(_p: u32, _o: u32, _dst: &mut [u8]) -> Result<()> { Ok(()) }
     fn noop_write(_p: u32, _o: u32, _src: &[u8]) -> Result<()> { Ok(()) }
     fn noop_copy(_p: u32, _d: u32, _s: u32, _l: u32) -> Result<()> { Ok(()) }
@@ -106,11 +102,7 @@ fn lifecycle_workload_against_both() {
         .collect();
     let mut guest = GuestTvm::new(
         pools,
-        Dispatch {
-            read_bytes: noop_read,
-            write_bytes: noop_write,
-            intra_pool_copy: noop_copy,
-        },
+        FnDispatch::new(noop_read, noop_write, noop_copy),
     );
     lifecycle_workload(&mut guest).unwrap();
 }
