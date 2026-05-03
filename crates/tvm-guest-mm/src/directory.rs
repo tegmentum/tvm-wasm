@@ -23,14 +23,30 @@ pub struct Pool {
     pub capacity: u32,
 }
 
-/// Guest-side TVM directory. Owns a fixed-size table of regions plus a
-/// fixed-size table of pools. Both are `Vec`s allocated at startup
-/// inside pool 0; they don't grow.
+/// Guest-side TVM directory.
+///
+/// **Region lookup is O(1).** Region ids are allocated densely from 1
+/// (id 0 is reserved for null), and `regions` is indexed directly by
+/// `id` — no linear scan, no hashing. After `dealloc_region` is added,
+/// freed slots become `None` and may be re-used by a small free-list
+/// (not implemented yet); for now the slot grows monotonically.
+///
+/// Pool allocation honors `PlacementPolicy` derived from the region's
+/// `RegionKind`. Today that means Hot regions land in low-numbered
+/// pools (better cache locality for frequently-touched data) and Warm
+/// regions land in high-numbered pools (less interference with the
+/// hot working set). Same round-robin within each band.
 pub struct GuestDirectory {
     pools: Vec<Pool>,
-    regions: Vec<Option<RegionEntry>>,
+    /// Dense slot table indexed by region_id. `slots[0]` is the null
+    /// reservation (always `None`); `slots[k]` for k ≥ 1 is the entry
+    /// for region id k.
+    slots: Vec<Option<RegionEntry>>,
     next_id: u16,
-    placement_cursor: u32, // round-robin pool selector
+    /// Round-robin cursor for Hot regions (low band).
+    cursor_hot: u32,
+    /// Round-robin cursor for Warm regions (high band).
+    cursor_warm: u32,
 }
 
 struct RegionEntry {
@@ -49,9 +65,10 @@ impl GuestDirectory {
     pub fn new(pools: Vec<Pool>) -> Self {
         Self {
             pools,
-            regions: Vec::new(),
-            next_id: 1, // 0 reserved for "null"
-            placement_cursor: 0,
+            slots: vec![None], // index 0 is reserved
+            next_id: 1,
+            cursor_hot: 0,
+            cursor_warm: 0,
         }
     }
 
@@ -70,14 +87,14 @@ impl GuestDirectory {
     ) -> Result<u16> {
         let id = self.next_id;
         self.next_id = self.next_id.checked_add(1).ok_or(TvmError::AllocationFailed)?;
-        let pool_index = self.choose_pool(capacity)?;
+        let policy = PlacementPolicy::for_kind(kind);
+        let pool_index = self.choose_pool(capacity, policy.initial_residency)?;
         let pool = &mut self.pools[pool_index as usize];
         let base_offset = pool.used;
         pool.used = pool
             .used
             .checked_add(capacity)
             .ok_or(TvmError::AllocationFailed)?;
-        let policy = PlacementPolicy::for_kind(kind);
         let entry = RegionEntry {
             meta: Region {
                 id,
@@ -94,7 +111,11 @@ impl GuestDirectory {
             base_offset,
             allocator: RegionAllocator::new(allocator, capacity),
         };
-        self.regions.push(Some(entry));
+        // Dense slot insert at id (slots[id] = Some(entry)).
+        // next_id was incremented past `id`, and `id == self.slots.len()`
+        // here because we always push exactly one slot per allocated id.
+        debug_assert_eq!(id as usize, self.slots.len());
+        self.slots.push(Some(entry));
         Ok(id)
     }
 
@@ -147,35 +168,60 @@ impl GuestDirectory {
         Ok(())
     }
 
-    fn choose_pool(&mut self, capacity: u32) -> Result<u32> {
-        // Round-robin starting at placement_cursor; pick first pool with
-        // enough remaining capacity. Wraps around once.
+    /// Pick a pool for a new region.
+    ///
+    /// Honors the region's initial residency hint:
+    /// - `Hot` / `External` → low band `[0, mid)` (ie. lower-numbered
+    ///   pools), round-robin within band
+    /// - `Warm` / `Cold`    → high band `[mid, n)`, round-robin within
+    ///   band
+    ///
+    /// Where `mid = ceil(n/2)`. With `n=1` everything lands in pool 0.
+    /// If the preferred band is full, falls through to the other band
+    /// before returning `AllocationFailed`.
+    fn choose_pool(
+        &mut self,
+        capacity: u32,
+        residency: Residency,
+    ) -> Result<u32> {
         let n = self.pools.len() as u32;
         if n == 0 {
             return Err(TvmError::AllocationFailed);
         }
-        for offset in 0..n {
-            let idx = (self.placement_cursor + offset) % n;
-            let pool = &self.pools[idx as usize];
-            if pool.capacity - pool.used >= capacity {
-                self.placement_cursor = (idx + 1) % n;
-                return Ok(idx);
+        let mid = n.div_ceil(2);
+        let prefers_hot = matches!(residency, Residency::Hot | Residency::External);
+        // Try the preferred band first, then the other.
+        let bands: [(u32, u32, &mut u32); 2] = if prefers_hot {
+            [(0, mid, &mut self.cursor_hot), (mid, n, &mut self.cursor_warm)]
+        } else {
+            [(mid, n, &mut self.cursor_warm), (0, mid, &mut self.cursor_hot)]
+        };
+        for (lo, hi, cursor) in bands {
+            if lo == hi { continue; } // empty band when n=1
+            let span = hi - lo;
+            for offset in 0..span {
+                let idx = lo + (*cursor + offset) % span;
+                let pool = &self.pools[idx as usize];
+                if pool.capacity - pool.used >= capacity {
+                    *cursor = (*cursor + offset + 1) % span;
+                    return Ok(idx);
+                }
             }
         }
         Err(TvmError::AllocationFailed)
     }
 
     fn entry(&self, region_id: u16) -> Result<&RegionEntry> {
-        self.regions
-            .iter()
-            .find_map(|e| e.as_ref().filter(|r| r.meta.id == region_id))
+        self.slots
+            .get(region_id as usize)
+            .and_then(|s| s.as_ref())
             .ok_or(TvmError::RegionNotFound(region_id))
     }
 
     fn entry_mut(&mut self, region_id: u16) -> Result<&mut RegionEntry> {
-        self.regions
-            .iter_mut()
-            .find_map(|e| e.as_mut().filter(|r| r.meta.id == region_id))
+        self.slots
+            .get_mut(region_id as usize)
+            .and_then(|s| s.as_mut())
             .ok_or(TvmError::RegionNotFound(region_id))
     }
 
@@ -205,25 +251,46 @@ mod tests {
     }
 
     #[test]
-    fn create_region_round_robin_across_pools() {
+    fn hot_regions_land_in_low_band_round_robin() {
+        // n=4 → mid=2 → hot band is pools [0, 2). HotHeap is Hot, so the
+        // four HotHeap regions cycle through pools 0,1,0,1.
         let mut d = dir(4, 1024);
-        let r0 = d.create_region(RegionKind::HotHeap, 256, AllocatorKind::Bump).unwrap();
-        let r1 = d.create_region(RegionKind::HotHeap, 256, AllocatorKind::Bump).unwrap();
-        let r2 = d.create_region(RegionKind::HotHeap, 256, AllocatorKind::Bump).unwrap();
-        let r3 = d.create_region(RegionKind::HotHeap, 256, AllocatorKind::Bump).unwrap();
+        let r0 = d.create_region(RegionKind::HotHeap, 128, AllocatorKind::Bump).unwrap();
+        let r1 = d.create_region(RegionKind::HotHeap, 128, AllocatorKind::Bump).unwrap();
+        let r2 = d.create_region(RegionKind::HotHeap, 128, AllocatorKind::Bump).unwrap();
+        let r3 = d.create_region(RegionKind::HotHeap, 128, AllocatorKind::Bump).unwrap();
+        let pools: [u32; 4] = [
+            d.entry(r0).unwrap().pool_index,
+            d.entry(r1).unwrap().pool_index,
+            d.entry(r2).unwrap().pool_index,
+            d.entry(r3).unwrap().pool_index,
+        ];
+        assert_eq!(pools, [0, 1, 0, 1]);
+    }
 
-        let info0 = d.region_info(r0).unwrap();
-        let info1 = d.region_info(r1).unwrap();
-        let info2 = d.region_info(r2).unwrap();
-        let info3 = d.region_info(r3).unwrap();
-        let _ = (info0, info1, info2, info3);
+    #[test]
+    fn warm_regions_land_in_high_band() {
+        // PageStore is Warm → high band [2, 4).
+        let mut d = dir(4, 1024);
+        let r0 = d.create_region(RegionKind::PageStore, 128, AllocatorKind::Bump).unwrap();
+        let r1 = d.create_region(RegionKind::PageStore, 128, AllocatorKind::Bump).unwrap();
+        let r2 = d.create_region(RegionKind::PageStore, 128, AllocatorKind::Bump).unwrap();
+        let pools: [u32; 3] = [
+            d.entry(r0).unwrap().pool_index,
+            d.entry(r1).unwrap().pool_index,
+            d.entry(r2).unwrap().pool_index,
+        ];
+        assert_eq!(pools, [2, 3, 2]);
+    }
 
-        // First four regions land in different pools.
-        let p0 = d.entry(r0).unwrap().pool_index;
-        let p1 = d.entry(r1).unwrap().pool_index;
-        let p2 = d.entry(r2).unwrap().pool_index;
-        let p3 = d.entry(r3).unwrap().pool_index;
-        assert_eq!([p0, p1, p2, p3], [0, 1, 2, 3]);
+    #[test]
+    fn hot_band_falls_through_to_warm_when_full() {
+        // n=2 → mid=1 → hot band is pool 0 only. After exhausting it,
+        // a Hot region must fall through to pool 1.
+        let mut d = dir(2, 100);
+        d.create_region(RegionKind::HotHeap, 100, AllocatorKind::Bump).unwrap();
+        let r1 = d.create_region(RegionKind::HotHeap, 100, AllocatorKind::Bump).unwrap();
+        assert_eq!(d.entry(r1).unwrap().pool_index, 1);
     }
 
     #[test]
@@ -258,11 +325,11 @@ mod tests {
 
     #[test]
     fn out_of_capacity_falls_through_pools() {
+        // n=3 → mid=2 → hot band [0,2), warm band [2,3).
         let mut d = dir(3, 100);
-        // First two consume pools 0 and 1.
         d.create_region(RegionKind::HotHeap, 100, AllocatorKind::Bump).unwrap();
         d.create_region(RegionKind::HotHeap, 100, AllocatorKind::Bump).unwrap();
-        // Third should land in pool 2.
+        // Third Hot region: hot band is full → falls through to warm.
         let r3 = d.create_region(RegionKind::HotHeap, 100, AllocatorKind::Bump).unwrap();
         assert_eq!(d.entry(r3).unwrap().pool_index, 2);
         // Fourth: nowhere to put it.
@@ -270,5 +337,19 @@ mod tests {
             d.create_region(RegionKind::HotHeap, 1, AllocatorKind::Bump),
             Err(TvmError::AllocationFailed)
         ));
+    }
+
+    #[test]
+    fn slot_lookup_is_o1_dense() {
+        // Sanity-check: ids start at 1, slots vec grows by exactly one
+        // per create_region. region_info on a non-existent id returns
+        // RegionNotFound without iterating.
+        let mut d = dir(4, 4096);
+        let r1 = d.create_region(RegionKind::HotHeap, 64, AllocatorKind::Bump).unwrap();
+        let r2 = d.create_region(RegionKind::HotHeap, 64, AllocatorKind::Bump).unwrap();
+        assert_eq!(r1, 1);
+        assert_eq!(r2, 2);
+        assert_eq!(d.slots.len(), 3); // null + r1 + r2
+        assert!(matches!(d.region_info(99), Err(TvmError::RegionNotFound(99))));
     }
 }
