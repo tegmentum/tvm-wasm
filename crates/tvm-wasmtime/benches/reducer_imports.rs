@@ -121,6 +121,36 @@ const COUNT_REDUCER_WAT: &str = r#"
 )
 "#;
 
+// popcount: classic = read+per-byte popcnt loop
+const POPCOUNT_CLASSIC_WAT: &str = r#"
+(module
+  (import "tvm" "read" (func $read (param i64 i32 i32) (result i32)))
+  (memory (export "memory") 8)
+  (func (export "popcount_via_read") (param $h i64) (param $len i32) (result i64)
+    (local $cur i32) (local $end i32) (local $acc i64)
+    (drop (call $read (local.get $h) (i32.const 0) (local.get $len)))
+    (local.set $end (local.get $len))
+    (block $break
+      (loop $continue
+        (br_if $break (i32.eq (local.get $cur) (local.get $end)))
+        (local.set $acc
+          (i64.add (local.get $acc)
+                   (i64.extend_i32_u (i32.popcnt (i32.load8_u (local.get $cur))))))
+        (local.set $cur (i32.add (local.get $cur) (i32.const 1)))
+        (br $continue)))
+    (local.get $acc))
+)
+"#;
+
+const POPCOUNT_REDUCER_WAT: &str = r#"
+(module
+  (import "tvm" "popcount" (func $pc (param i64 i32) (result i64)))
+  (memory (export "memory") 1)
+  (func (export "popcount_via_reducer") (param $h i64) (param $len i32) (result i64)
+    (call $pc (local.get $h) (local.get $len)))
+)
+"#;
+
 fn setup(size: u32, data: &[u8]) -> anyhow::Result<(Store<TvmHost>, i64)> {
     let host = TvmHost::new();
     let engine = Engine::new(Config::new().wasm_multi_memory(true))?;
@@ -195,6 +225,12 @@ fn main() -> anyhow::Result<()> {
         let c = run3(COUNT_CLASSIC_WAT, "count_via_read", size, &data, 0x42)?;
         let r = run3(COUNT_REDUCER_WAT, "count_via_reducer", size, &data, 0x42)?;
         pair_summary("    classic (read+loop)", "    reducer (count_byte)", c, r, size);
+
+        // popcount — bit-counting reduction
+        println!("  [popcount]");
+        let c = run(POPCOUNT_CLASSIC_WAT, "popcount_via_read", size, &data)?;
+        let r = run(POPCOUNT_REDUCER_WAT, "popcount_via_reducer", size, &data)?;
+        pair_summary("    classic (read+loop)", "    reducer (popcount)", c, r, size);
 
         println!();
     }

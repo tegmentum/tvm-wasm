@@ -457,6 +457,133 @@ where
         },
     )?;
 
+    linker.func_wrap(
+        "tvm",
+        "sum_u32_le",
+        // Returns sum as i64 (low 60 bits used). -1 on err. Caller
+        // promises len % 4 == 0.
+        |mut caller: Caller<'_, T>, packed: i64, len: i32| -> i64 {
+            let h = Handle::unpack(packed as u64);
+            let host = caller.data_mut().as_mut();
+            match host.region_sum_u32_le(h, len as u32) {
+                Ok(s) if s <= i64::MAX as u128 => s as i64,
+                Ok(_) => {
+                    host.last_raw_error = err_code(&TvmError::OutOfBounds);
+                    -1
+                }
+                Err(e) => {
+                    host.last_raw_error = err_code(&e);
+                    -1
+                }
+            }
+        },
+    )?;
+
+    linker.func_wrap(
+        "tvm",
+        "max_u32_le",
+        // Returns the max u32 cast to i64; -1 on err; -2 on empty.
+        |mut caller: Caller<'_, T>, packed: i64, len: i32| -> i64 {
+            let h = Handle::unpack(packed as u64);
+            let host = caller.data_mut().as_mut();
+            match host.region_max_u32_le(h, len as u32) {
+                Ok(Some(v)) => v as i64,
+                Ok(None) => -2,
+                Err(e) => {
+                    host.last_raw_error = err_code(&e);
+                    -1
+                }
+            }
+        },
+    )?;
+
+    linker.func_wrap(
+        "tvm",
+        "popcount",
+        |mut caller: Caller<'_, T>, packed: i64, len: i32| -> i64 {
+            let h = Handle::unpack(packed as u64);
+            let host = caller.data_mut().as_mut();
+            match host.region_popcount(h, len as u32) {
+                Ok(v) => v as i64,
+                Err(e) => {
+                    host.last_raw_error = err_code(&e);
+                    -1
+                }
+            }
+        },
+    )?;
+
+    linker.func_wrap(
+        "tvm",
+        "fill",
+        |mut caller: Caller<'_, T>, packed: i64, len: i32, byte: i32| -> i32 {
+            let h = Handle::unpack(packed as u64);
+            let host = caller.data_mut().as_mut();
+            match host.region_fill(h, len as u32, byte as u8) {
+                Ok(()) => ERR_OK,
+                Err(e) => err_code(&e),
+            }
+        },
+    )?;
+
+    linker.func_wrap(
+        "tvm",
+        "xor_with_byte",
+        |mut caller: Caller<'_, T>, packed: i64, len: i32, byte: i32| -> i32 {
+            let h = Handle::unpack(packed as u64);
+            let host = caller.data_mut().as_mut();
+            match host.region_xor_with_byte(h, len as u32, byte as u8) {
+                Ok(()) => ERR_OK,
+                Err(e) => err_code(&e),
+            }
+        },
+    )?;
+
+    // index_of: needle lives in the guest's linear memory at
+    // `needle_ptr`, length `needle_len`. Caller must ensure the
+    // pointer is valid for that many bytes. Returns offset, -1 if not
+    // found, -2 on error.
+    linker.func_wrap(
+        "tvm",
+        "index_of",
+        move |mut caller: Caller<'_, T>,
+              packed: i64,
+              len: i32,
+              needle_ptr: i32,
+              needle_len: i32|
+              -> i32 {
+            let h = Handle::unpack(packed as u64);
+            if needle_len < 0 || needle_len > 4096 {
+                return -2;
+            }
+            let needle_off = needle_ptr as usize;
+            let needle_n = needle_len as usize;
+            let required_end = match needle_off.checked_add(needle_n) {
+                Some(e) => e,
+                None => return ERR_GUEST_MEMORY,
+            };
+            let mem = match cached_guest_memory_view(
+                &mut caller, memory_name, required_end,
+            ) {
+                Some((m, _, _)) => m,
+                None => return ERR_GUEST_MEMORY,
+            };
+            let mut needle = vec![0u8; needle_n];
+            if mem.read(&caller, needle_off, &mut needle).is_err() {
+                return ERR_GUEST_MEMORY;
+            }
+            let host = caller.data_mut().as_mut();
+            match host.region_index_of(h, len as u32, &needle) {
+                Ok(Some(off)) => off as i32,
+                Ok(None) => -1,
+                Err(e) => {
+                    host.last_raw_error = err_code(&e);
+                    -2
+                }
+            }
+        },
+    )?;
+
     // Histogram needs to write 1024 bytes (256 u32s LE) into the guest's
     // memory at `out_ptr`. Caller must ensure the destination is long
     // enough.
