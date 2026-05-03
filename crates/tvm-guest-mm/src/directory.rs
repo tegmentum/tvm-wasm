@@ -6,10 +6,13 @@
 //! multi-memory dispatch is done by separate generated WAT helper
 //! functions which the workload calls when reading/writing bytes.
 
+use std::collections::HashMap;
 use tvm_core::{
-    AllocatorKind, Handle, PlacementPolicy, Region, RegionAllocator, RegionKind,
-    Residency, Result, TvmError,
+    AllocatorKind, Handle, HandleRemap, PlacementPolicy, Region,
+    RegionAllocator, RegionKind, Residency, Result, TvmError,
 };
+
+use crate::facade::Dispatch;
 
 /// One memory pool in the multi-memory module. Each pool is a separate
 /// wasm memory (index 0..N) that the module declares internally.
@@ -166,6 +169,76 @@ impl GuestDirectory {
         }
         entry.meta.pinned = true;
         Ok(())
+    }
+
+    /// Compact the region's live allocations toward its base. Walks
+    /// the allocator's `allocated_blocks()` in ascending order, slides
+    /// each block to its new packed offset via the dispatch's
+    /// per-pool `intra_pool_copy` helper, then rebuilds the
+    /// allocator's state.
+    ///
+    /// Returns a `HandleRemap` mapping each block's old offset to its
+    /// new offset, plus the region's bumped generation. Old handles
+    /// fail validation immediately; the caller migrates them with
+    /// `HandleRemap::migrate`.
+    ///
+    /// Errors:
+    /// - `Pinned` if the region is pinned (caller must unpin first).
+    /// - `UnsupportedAllocator` if the region uses Bump (no allocated-
+    ///   block tracking) or Slab (compaction n/a — uniform slots).
+    /// - Anything from `intra_pool_copy` (out-of-bounds in the pool,
+    ///   etc.).
+    pub fn compact_region(
+        &mut self,
+        region_id: u16,
+        dispatch: &Dispatch,
+    ) -> Result<HandleRemap> {
+        let entry = self.entry_mut(region_id)?;
+        if entry.meta.pinned {
+            return Err(TvmError::Pinned);
+        }
+        let blocks = entry
+            .allocator
+            .allocated_blocks()
+            .ok_or(TvmError::UnsupportedAllocator)?;
+        let pool_index = entry.pool_index;
+        let base_offset = entry.base_offset;
+
+        // Walk blocks in ascending order; pack each at the next
+        // available cursor. Source/destination overlap is fine —
+        // wasm memory.copy handles direction.
+        let mut mapping: HashMap<u32, u32> = HashMap::with_capacity(blocks.len());
+        let mut new_blocks: Vec<(u32, u32)> = Vec::with_capacity(blocks.len());
+        let mut cursor: u32 = 0;
+        for (old_off, size) in &blocks {
+            if *old_off != cursor {
+                (dispatch.intra_pool_copy)(
+                    pool_index,
+                    base_offset + cursor,
+                    base_offset + *old_off,
+                    *size,
+                )?;
+            }
+            mapping.insert(*old_off, cursor);
+            new_blocks.push((cursor, *size));
+            cursor = cursor.checked_add(*size).ok_or(TvmError::AllocationFailed)?;
+        }
+
+        let old_gen = entry.meta.generation;
+        let mut next = entry.meta.generation.wrapping_add(1);
+        if next == 0 {
+            next = 1;
+        }
+        entry.meta.generation = next;
+        entry.allocator.rebuild_after_compact(&new_blocks, entry.meta.capacity);
+        entry.meta.used = entry.allocator.used();
+
+        Ok(HandleRemap {
+            region_id,
+            old_generation: old_gen,
+            new_generation: next,
+            mapping,
+        })
     }
 
     /// Pick a pool for a new region.

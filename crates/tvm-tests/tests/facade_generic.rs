@@ -47,6 +47,12 @@ fn library_workload_against_guest_tvm() {
         p[off as usize..off as usize + src.len()].copy_from_slice(src);
         Ok(())
     }
+    fn stub_intra_pool_copy(pool: u32, dst_off: u32, src_off: u32, len: u32) -> Result<()> {
+        let mut pools = STUB.lock().unwrap();
+        let p = &mut pools[pool as usize];
+        p.copy_within(src_off as usize..src_off as usize + len as usize, dst_off as usize);
+        Ok(())
+    }
 
     *STUB.lock().unwrap() = (0..4).map(|_| vec![0u8; 4096]).collect();
 
@@ -62,6 +68,7 @@ fn library_workload_against_guest_tvm() {
         Dispatch {
             read_bytes: stub_read,
             write_bytes: stub_write,
+            intra_pool_copy: stub_intra_pool_copy,
         },
     );
 
@@ -93,12 +100,17 @@ fn lifecycle_workload_against_both() {
     use tvm_guest_mm::{Dispatch, GuestTvm, Pool};
     fn noop_read(_p: u32, _o: u32, _dst: &mut [u8]) -> Result<()> { Ok(()) }
     fn noop_write(_p: u32, _o: u32, _src: &[u8]) -> Result<()> { Ok(()) }
+    fn noop_copy(_p: u32, _d: u32, _s: u32, _l: u32) -> Result<()> { Ok(()) }
     let pools: Vec<Pool> = (0..2)
         .map(|i| Pool { memory_index: i, used: 0, capacity: 4096 })
         .collect();
     let mut guest = GuestTvm::new(
         pools,
-        Dispatch { read_bytes: noop_read, write_bytes: noop_write },
+        Dispatch {
+            read_bytes: noop_read,
+            write_bytes: noop_write,
+            intra_pool_copy: noop_copy,
+        },
     );
     lifecycle_workload(&mut guest).unwrap();
 }

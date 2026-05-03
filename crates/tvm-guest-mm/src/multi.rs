@@ -219,6 +219,13 @@ mod tests {
         Ok(())
     }
 
+    fn stub_intra_pool_copy(pool: u32, dst_off: u32, src_off: u32, len: u32) -> Result<()> {
+        let mut pools = STUB_POOLS.lock().unwrap();
+        let p = &mut pools[pool as usize];
+        p.copy_within(src_off as usize..src_off as usize + len as usize, dst_off as usize);
+        Ok(())
+    }
+
     fn build(n_shards: usize, pools_per_shard: usize, capacity: u32) -> MultiGuestTvm {
         let total_pools = n_shards * pools_per_shard;
         let mut g = STUB_POOLS.lock().unwrap();
@@ -239,7 +246,11 @@ mod tests {
                     .collect();
                 GuestTvm::new(
                     pool_descs,
-                    Dispatch { read_bytes: stub_read, write_bytes: stub_write },
+                    Dispatch {
+                        read_bytes: stub_read,
+                        write_bytes: stub_write,
+                        intra_pool_copy: stub_intra_pool_copy,
+                    },
                 )
             })
             .collect();

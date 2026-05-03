@@ -757,6 +757,26 @@ pub(crate) fn emit_indirect_load_dispatchers(n_pools: u32) -> String {
     s
 }
 
+/// Per-pool intra-pool copy helpers — `memory.copy K K`. Used by the
+/// compactor to slide live blocks within their region's pool. One per
+/// pool, statically specialized, zero dispatch on the hot path.
+///
+/// Source and destination may overlap; wasm `memory.copy` semantics
+/// are equivalent to copying via a scratch buffer, so direction
+/// doesn't need to be sorted out by the caller.
+pub(crate) fn emit_specialized_intra_pool_copy(n_pools: u32) -> String {
+    let mut s = String::new();
+    for k in 0..n_pools {
+        s.push_str(&format!(
+            "  (func $tvm_intra_pool_copy_p{k} (export \"tvm_intra_pool_copy_p{k}\")\n        \
+             (param $dst_off i32) (param $src_off i32) (param $len i32)\n    \
+             (memory.copy {k} {k} (local.get $dst_off) (local.get $src_off) (local.get $len)))\n",
+            k = k,
+        ));
+    }
+    s
+}
+
 /// Specialized typed load/store helpers — one per pool, no dispatch.
 /// Mirrors the specialized copy helpers but for single typed
 /// load/store ops. Useful in tight per-element loops where the pool
@@ -997,6 +1017,14 @@ mod tests {
             wat::parse_str(&wrap(n, &body)).unwrap_or_else(|e| {
                 panic!("indirect dispatchers n={} failed to parse: {}", n, e)
             });
+        }
+    }
+
+    #[test]
+    fn intra_pool_copy_helpers_parse() {
+        for n in [1u32, 2, 4, 16] {
+            let body = emit_specialized_intra_pool_copy(n);
+            wat::parse_str(&wrap(n, &body)).expect("parse");
         }
     }
 

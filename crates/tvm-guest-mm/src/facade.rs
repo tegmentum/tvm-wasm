@@ -56,6 +56,11 @@ pub struct Dispatch {
     pub read_bytes: fn(pool: u32, offset: u32, dst: &mut [u8]) -> Result<()>,
     /// Write bytes to `(pool, offset)`.
     pub write_bytes: fn(pool: u32, offset: u32, src: &[u8]) -> Result<()>,
+    /// Copy `len` bytes from `src_off` to `dst_off` within the same
+    /// pool. Used by `compact_region`. Source and destination may
+    /// overlap (wasm memory.copy semantics).
+    pub intra_pool_copy:
+        fn(pool: u32, dst_off: u32, src_off: u32, len: u32) -> Result<()>,
 }
 
 impl GuestTvm {
@@ -75,6 +80,24 @@ impl GuestTvm {
 
     pub fn directory_mut(&mut self) -> &mut GuestDirectory {
         &mut self.directory
+    }
+
+    /// Compact a region in place. Walks the region's freelist of live
+    /// blocks, slides each one toward the start of the region using
+    /// the dispatch's `intra_pool_copy` (statically lowered to
+    /// `memory.copy K K` per pool), and rebuilds the allocator's
+    /// state. Bumps the region's generation so any handles held over
+    /// the compaction must be migrated via the returned `HandleRemap`
+    /// before they can be used again.
+    ///
+    /// Only supported for regions backed by an allocator that tracks
+    /// allocations (Freelist today; Bump returns
+    /// `UnsupportedAllocator`).
+    pub fn compact_region(
+        &mut self,
+        region_id: u16,
+    ) -> Result<tvm_core::HandleRemap> {
+        self.directory.compact_region(region_id, &self.dispatch)
     }
 }
 
@@ -161,6 +184,19 @@ mod tests {
         Ok(())
     }
 
+    fn stub_intra_pool_copy(pool: u32, dst_off: u32, src_off: u32, len: u32) -> Result<()> {
+        let mut pools = STUB_POOLS.lock().unwrap();
+        let p = &mut pools[pool as usize];
+        let s = src_off as usize;
+        let d = dst_off as usize;
+        let n = len as usize;
+        if s + n > p.len() || d + n > p.len() {
+            return Err(TvmError::OutOfBounds);
+        }
+        p.copy_within(s..s + n, d);
+        Ok(())
+    }
+
     fn build_guest(n_pools: usize, capacity: u32) -> GuestTvm {
         let mut pools = STUB_POOLS.lock().unwrap();
         pools.clear();
@@ -181,6 +217,7 @@ mod tests {
             Dispatch {
                 read_bytes: stub_read,
                 write_bytes: stub_write,
+                intra_pool_copy: stub_intra_pool_copy,
             },
         )
     }
