@@ -247,6 +247,68 @@ impl TvmHost {
         }
     }
 
+    // ------------------------------------------------------------------
+    // Reducer API: operations that fold a region's bytes to a scalar
+    // result, then return the scalar across the host boundary.
+    //
+    // For a wasm-guest caller, these replace the "host.read_bytes(...)
+    // → scalar guest loop" two-step with a single trampoline that
+    // returns the answer directly. The host-side implementation is
+    // plain Rust over the region's `&[u8]`; rustc's autovectorizer
+    // produces native SIMD for these shapes, so the host pays
+    // hardware-bandwidth cost regardless of payload size.
+    //
+    // None of these require a guest-side SIMD sidecar — that pattern
+    // turned out to be slower than autovec'd Rust for host execution.
+    // The benefit is purely in collapsing the call sequence.
+    // ------------------------------------------------------------------
+
+    /// Sum every byte in the first `len` bytes of `handle`'s region as
+    /// a u64 (no overflow possible — max value is len × 255). Returns
+    /// `OutOfBounds` if `len` exceeds the region's capacity from
+    /// `handle.offset`.
+    pub fn region_sum_u8(
+        &mut self,
+        handle: CoreHandle,
+        len: u32,
+    ) -> Result<u64, CoreError> {
+        let bytes = self.directory.region_slice_at(handle, len)?;
+        Ok(bytes.iter().map(|&b| b as u64).sum())
+    }
+
+    /// First offset (relative to `handle.offset`) at which `byte`
+    /// occurs within `len` bytes of the region, or `None`. Returns
+    /// `OutOfBounds` for an over-long `len`.
+    pub fn region_find_byte(
+        &mut self,
+        handle: CoreHandle,
+        len: u32,
+        byte: u8,
+    ) -> Result<Option<u32>, CoreError> {
+        let bytes = self.directory.region_slice_at(handle, len)?;
+        Ok(bytes
+            .iter()
+            .position(|&b| b == byte)
+            .map(|p| p as u32))
+    }
+
+    /// FNV-1a hash of `len` bytes. 64-bit variant. Cheap, decent
+    /// distribution, autovec-friendly. For cryptographic hashes use
+    /// a real digest crate over `region_slice_at`.
+    pub fn region_hash_fnv1a(
+        &mut self,
+        handle: CoreHandle,
+        len: u32,
+    ) -> Result<u64, CoreError> {
+        let bytes = self.directory.region_slice_at(handle, len)?;
+        let mut h: u64 = 0xcbf29ce484222325;
+        for &b in bytes {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        Ok(h)
+    }
+
     /// Look up a region's metadata, hitting the cache first. On miss, falls
     /// back to the directory and populates the cache. Hot path for the raw
     /// linker.

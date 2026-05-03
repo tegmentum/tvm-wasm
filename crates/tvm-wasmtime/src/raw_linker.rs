@@ -330,6 +330,68 @@ where
         },
     )?;
 
+    // ---- reducer imports: fold a region's bytes to a scalar ----
+    //
+    // These collapse the "host.read into guest mem, then guest sums it"
+    // pattern into a single trampoline. Implementation is plain Rust
+    // (autovec'd) over the region's slice; no SIMD wasm sidecar.
+    //
+    // Result conventions:
+    //   sum_u8       -> i64 with the sum (≥0; -1 on error)
+    //   find_byte    -> i32 offset, -1 if not found, < -1 reserved errno
+    //   hash_fnv1a   -> i64 hash; on error sets last_raw_error and
+    //                   returns 0 (rare collision, caller can check
+    //                   last_error if 0 is returned)
+
+    linker.func_wrap(
+        "tvm",
+        "sum_u8",
+        |mut caller: Caller<'_, T>, packed: i64, len: i32| -> i64 {
+            let h = Handle::unpack(packed as u64);
+            let host = caller.data_mut().as_mut();
+            match host.region_sum_u8(h, len as u32) {
+                Ok(s) => s as i64,
+                Err(e) => {
+                    host.last_raw_error = err_code(&e);
+                    -1
+                }
+            }
+        },
+    )?;
+
+    linker.func_wrap(
+        "tvm",
+        "find_byte",
+        |mut caller: Caller<'_, T>, packed: i64, len: i32, byte: i32| -> i32 {
+            let h = Handle::unpack(packed as u64);
+            let host = caller.data_mut().as_mut();
+            match host.region_find_byte(h, len as u32, byte as u8) {
+                Ok(Some(off)) => off as i32,
+                Ok(None) => -1,
+                Err(e) => {
+                    host.last_raw_error = err_code(&e);
+                    -2
+                }
+            }
+        },
+    )?;
+
+    linker.func_wrap(
+        "tvm",
+        "hash_fnv1a",
+        |mut caller: Caller<'_, T>, packed: i64, len: i32| -> i64 {
+            let h = Handle::unpack(packed as u64);
+            let host = caller.data_mut().as_mut();
+            match host.region_hash_fnv1a(h, len as u32) {
+                Ok(v) => v as i64,
+                Err(e) => {
+                    host.last_raw_error = err_code(&e);
+                    0
+                }
+            }
+        },
+    )?;
+
     // Suppress unused warning when memory name is the default.
     let _ = guest_memory::<T>;
 

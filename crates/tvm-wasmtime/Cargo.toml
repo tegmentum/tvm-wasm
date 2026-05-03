@@ -16,7 +16,12 @@ wat = { workspace = true }
 wit-component = { workspace = true }
 tempfile = "3"
 criterion = "0.5"
+tvm-test-harness = { path = "../tvm-test-harness" }
 
 [[bench]]
 name = "host_paths"
+harness = false
+
+[[bench]]
+name = "reducer_imports"
 harness = false
