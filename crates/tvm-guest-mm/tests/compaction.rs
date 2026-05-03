@@ -13,6 +13,10 @@ use tvm_guest_mm::{
 // support) so the directory's compactor can be exercised host-side
 // without a wasm runtime.
 static STUB_POOLS: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
+// Global test serialization — STUB_POOLS is shared mutable state and
+// cargo test runs tests in this binary in parallel by default. Hold
+// this for the duration of each test body to keep them ordered.
+static TEST_SERIAL: Mutex<()> = Mutex::new(());
 
 fn stub_read(pool: u32, off: u32, dst: &mut [u8]) -> Result<()> {
     let pools = STUB_POOLS.lock().unwrap();
@@ -46,6 +50,7 @@ fn stub_intra_pool_copy(pool: u32, dst_off: u32, src_off: u32, len: u32) -> Resu
 }
 
 fn build(n_pools: usize, capacity: u32) -> GuestTvm {
+    // Caller must hold the TEST_SERIAL guard.
     let mut pools = STUB_POOLS.lock().unwrap();
     pools.clear();
     for _ in 0..n_pools {
@@ -66,6 +71,7 @@ fn build(n_pools: usize, capacity: u32) -> GuestTvm {
 
 #[test]
 fn compaction_packs_live_blocks_and_migrates_handles() {
+    let _guard = TEST_SERIAL.lock().unwrap();
     let mut g = build(2, 4096);
     let r = g.directory_mut()
         .create_region(RegionKind::HotHeap, 1024, AllocatorKind::Freelist)
@@ -130,6 +136,7 @@ fn compaction_packs_live_blocks_and_migrates_handles() {
 
 #[test]
 fn compaction_rejects_pinned_region() {
+    let _guard = TEST_SERIAL.lock().unwrap();
     let mut g = build(1, 4096);
     let r = g.directory_mut()
         .create_region(RegionKind::HotHeap, 512, AllocatorKind::Freelist)
@@ -140,7 +147,48 @@ fn compaction_rejects_pinned_region() {
 }
 
 #[test]
+fn resolve_cache_invalidates_on_compaction() {
+    let _guard = TEST_SERIAL.lock().unwrap();
+    // Hit the cache via a read on the original generation, then
+    // compact (which bumps generation), then read via the migrated
+    // handle. If the cache wasn't invalidated, the second read would
+    // resolve to the OLD pool/base for the new generation — wrong.
+    use tvm_core::TvmFacade;
+    let mut g = build(1, 4096);
+    let r = g.directory_mut()
+        .create_region(RegionKind::HotHeap, 1024, AllocatorKind::Freelist)
+        .unwrap();
+    let h_a = g.directory_mut().alloc(r, 64).unwrap();
+    let h_b = g.directory_mut().alloc(r, 32).unwrap();
+    g.write(h_a, &[0xaa; 64]).unwrap();
+    g.write(h_b, &[0xbb; 32]).unwrap();
+    g.directory_mut().dealloc(h_a).unwrap();
+
+    // Warm the cache by reading h_b (still on generation 1).
+    let mut buf = [0u8; 32];
+    g.read(h_b, &mut buf).unwrap();
+    assert!(buf.iter().all(|&x| x == 0xbb));
+
+    // Compact — h_b's offset shifts from 64 → 0 and generation → 2.
+    let remap = g.compact_region(r).unwrap();
+    let h_b_new = remap.migrate(h_b).unwrap();
+
+    // The migrated handle must resolve correctly. If the cache held
+    // stale data (gen=1, base reflecting pre-compact layout), this
+    // read would either fail validation (good) or return wrong
+    // bytes (bad).
+    let mut buf2 = [0u8; 32];
+    g.read(h_b_new, &mut buf2).unwrap();
+    assert!(buf2.iter().all(|&x| x == 0xbb), "post-compact read must work");
+
+    // The pre-compact handle must STILL fail (stale generation), not
+    // be silently served by the cache.
+    assert!(matches!(g.read(h_b, &mut buf), Err(TvmError::StaleHandle)));
+}
+
+#[test]
 fn compaction_rejects_bump_allocator() {
+    let _guard = TEST_SERIAL.lock().unwrap();
     let mut g = build(1, 4096);
     let r = g.directory_mut()
         .create_region(RegionKind::HotHeap, 512, AllocatorKind::Bump)

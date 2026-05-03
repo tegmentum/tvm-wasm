@@ -43,6 +43,31 @@ pub struct GuestTvm {
     /// functions in the same module. In unit tests on the host they
     /// can be stubbed.
     dispatch: Dispatch,
+    /// Single-entry resolve cache. Hot loop pattern is "many ops on the
+    /// same region"; we cache the last successful resolve and skip the
+    /// directory lookup on subsequent same-region accesses with the
+    /// same generation.
+    cache: ResolveCache,
+}
+
+/// Single-entry cache of `(region_id, generation) → (pool_index,
+/// base_offset)`. `region_id == 0` means empty (region 0 is reserved
+/// for the null handle).
+#[derive(Clone, Copy)]
+struct ResolveCache {
+    region_id: u16,
+    generation: u16,
+    pool_index: u32,
+    base_offset: u32,
+}
+
+impl ResolveCache {
+    const EMPTY: Self = Self {
+        region_id: 0,
+        generation: 0,
+        pool_index: 0,
+        base_offset: 0,
+    };
 }
 
 /// Shape of the dispatch function table. Each function is a thin
@@ -66,11 +91,32 @@ pub struct Dispatch {
 impl GuestTvm {
     /// Construct a guest-side TVM with the supplied pool descriptors.
     /// Pool descriptors must match the wasm module's declared memories.
+    /// Defaults to `AllocatorKind::Bump`; use `with_default_allocator`
+    /// for `Freelist` (compactable, fragments) or `Slab` (uniform
+    /// slot sizes).
     pub fn new(pools: Vec<Pool>, dispatch: Dispatch) -> Self {
+        Self::with_default_allocator(pools, dispatch, AllocatorKind::Bump)
+    }
+
+    /// Construct with a specific default allocator.
+    ///
+    /// - `Bump`: O(1) alloc, no reclaim. Best for one-shot or
+    ///   short-lived workloads.
+    /// - `Freelist`: tracks live blocks; supports `compact_region`
+    ///   to reclaim fragmented space. Choose for long-running guests
+    ///   with allocate-and-free churn.
+    /// - `Slab`: uniform slot sizes; no fragmentation by construction.
+    ///   Choose when objects are all the same size.
+    pub fn with_default_allocator(
+        pools: Vec<Pool>,
+        dispatch: Dispatch,
+        default_allocator: AllocatorKind,
+    ) -> Self {
         Self {
             directory: GuestDirectory::new(pools),
-            default_allocator: AllocatorKind::Bump,
+            default_allocator,
             dispatch,
+            cache: ResolveCache::EMPTY,
         }
     }
 
@@ -97,7 +143,45 @@ impl GuestTvm {
         &mut self,
         region_id: u16,
     ) -> Result<tvm_core::HandleRemap> {
+        // Cache invalidation: compaction bumps the region's generation
+        // and may move blocks within the pool. Drop the cache entry
+        // for this region so subsequent ops re-resolve.
+        if self.cache.region_id == region_id {
+            self.cache = ResolveCache::EMPTY;
+        }
         self.directory.compact_region(region_id, &self.dispatch)
+    }
+
+    /// Cache-aware resolve. Returns the absolute (pool_index,
+    /// pool_offset) for `handle`. Hot path is the fast branch:
+    /// region_id and generation match the cache entry, and we just add
+    /// the cached base_offset to the handle's offset. Miss path falls
+    /// back to the directory's O(1) slot lookup and refreshes the
+    /// cache.
+    fn cached_resolve(&mut self, handle: Handle) -> Result<(u32, u32)> {
+        if handle.region_id != 0
+            && handle.region_id == self.cache.region_id
+            && handle.generation == self.cache.generation
+        {
+            // Bounds check on offset still happens via the dispatch
+            // call; we just save the directory lookup here.
+            let abs = self.cache.base_offset.checked_add(handle.offset)
+                .ok_or(TvmError::OutOfBounds)?;
+            return Ok((self.cache.pool_index, abs));
+        }
+        // Miss — full resolve. Then refresh the cache entry from the
+        // returned (pool, abs) tuple by deriving base = abs -
+        // handle.offset. Both are bounds-checked against region size
+        // by directory.resolve.
+        let (pool, abs) = self.directory.resolve(handle)?;
+        let base = abs.checked_sub(handle.offset).unwrap_or(0);
+        self.cache = ResolveCache {
+            region_id: handle.region_id,
+            generation: handle.generation,
+            pool_index: pool,
+            base_offset: base,
+        };
+        Ok((pool, abs))
     }
 }
 
@@ -120,7 +204,7 @@ impl TvmFacade for GuestTvm {
     }
 
     fn read(&mut self, handle: Handle, buf: &mut [u8]) -> Result<()> {
-        let (pool, off) = self.directory.resolve(handle)?;
+        let (pool, off) = self.cached_resolve(handle)?;
         let end = off
             .checked_add(buf.len() as u32)
             .ok_or(TvmError::OutOfBounds)?;
@@ -129,7 +213,7 @@ impl TvmFacade for GuestTvm {
     }
 
     fn write(&mut self, handle: Handle, data: &[u8]) -> Result<()> {
-        let (pool, off) = self.directory.resolve(handle)?;
+        let (pool, off) = self.cached_resolve(handle)?;
         let end = off
             .checked_add(data.len() as u32)
             .ok_or(TvmError::OutOfBounds)?;
@@ -231,5 +315,57 @@ mod tests {
         let mut buf = [0u8; 16];
         g.read(h, &mut buf).unwrap();
         assert_eq!(&buf, b"facade-via-guest");
+    }
+
+    #[test]
+    fn with_default_allocator_freelist_creates_compactable_regions() {
+        let mut pools = STUB_POOLS.lock().unwrap();
+        pools.clear();
+        for _ in 0..2 { pools.push(vec![0u8; 4096]); }
+        drop(pools);
+        let pool_descs: Vec<Pool> = (0..2u32)
+            .map(|i| Pool { memory_index: i, used: 0, capacity: 4096 })
+            .collect();
+        let mut g = GuestTvm::with_default_allocator(
+            pool_descs,
+            Dispatch {
+                read_bytes: stub_read,
+                write_bytes: stub_write,
+                intra_pool_copy: stub_intra_pool_copy,
+            },
+            AllocatorKind::Freelist,
+        );
+        // Region inherits the default; compaction must succeed (Bump
+        // would have returned UnsupportedAllocator).
+        let r = g.create_region(RegionKind::HotHeap, 256).unwrap();
+        let h = g.alloc(r, 64).unwrap();
+        g.write(h, &[0x55; 64]).unwrap();
+        g.compact_region(r).expect("freelist regions are compactable");
+    }
+
+    #[test]
+    fn resolve_cache_hits_on_repeat_access() {
+        // Indirect verification: same-region reads are fast and
+        // correct. Hard to assert "cache hit" without exposing
+        // counters; instead we assert correctness across a sequence
+        // of reads/writes that would expose any cache staleness.
+        let mut g = build_guest(2, 4096);
+        let r1 = g.create_region(RegionKind::HotHeap, 256).unwrap();
+        let r2 = g.create_region(RegionKind::HotHeap, 256).unwrap();
+        let h1 = g.alloc(r1, 32).unwrap();
+        let h2 = g.alloc(r2, 32).unwrap();
+
+        for i in 0..100u32 {
+            // Alternate writes/reads against r1 and r2 so the cache
+            // gets evicted and re-warmed each iteration.
+            g.write(h1, &[(i & 0xff) as u8; 32]).unwrap();
+            g.write(h2, &[((i ^ 0xff) & 0xff) as u8; 32]).unwrap();
+            let mut buf1 = [0u8; 32];
+            let mut buf2 = [0u8; 32];
+            g.read(h1, &mut buf1).unwrap();
+            g.read(h2, &mut buf2).unwrap();
+            assert_eq!(buf1[0], (i & 0xff) as u8);
+            assert_eq!(buf2[0], ((i ^ 0xff) & 0xff) as u8);
+        }
     }
 }
