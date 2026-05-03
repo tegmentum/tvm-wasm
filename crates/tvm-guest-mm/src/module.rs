@@ -4,7 +4,7 @@
 
 use crate::dispatch::{
     emit_bulk_copy_dispatcher, emit_bulk_copy_from_default_dispatcher,
-    emit_load_dispatcher, emit_store_dispatcher,
+    emit_load_dispatcher, emit_specialized_copy_helpers, emit_store_dispatcher,
 };
 
 #[derive(Clone, Debug)]
@@ -66,6 +66,11 @@ pub fn tvm_guest_mm_module_template(p: &ModuleParams) -> String {
     // idiom for sequential / range workloads.
     s.push_str(&emit_bulk_copy_dispatcher(p.n_pools));
     s.push_str(&emit_bulk_copy_from_default_dispatcher(p.n_pools));
+
+    // Specialized direct-copy helpers — one per pool, no dispatch. The
+    // workload calls these by indexing a function table at the resolved
+    // pool index. Skips the dispatch chain entirely on the hot path.
+    s.push_str(&emit_specialized_copy_helpers(p.n_pools));
 
     s.push_str("\n  ;; --- user body begins ---\n");
     s.push_str(&p.user_body);

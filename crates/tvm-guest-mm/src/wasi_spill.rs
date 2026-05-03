@@ -120,7 +120,8 @@ pub fn tvm_guest_mm_module_with_wasi_spill(
 ) -> String {
     use crate::dispatch::{
         emit_bulk_copy_dispatcher, emit_bulk_copy_from_default_dispatcher,
-        emit_load_dispatcher, emit_store_dispatcher,
+        emit_load_dispatcher, emit_specialized_copy_helpers,
+        emit_store_dispatcher,
     };
     let mut s = String::new();
     s.push_str("(module\n");
@@ -143,6 +144,7 @@ pub fn tvm_guest_mm_module_with_wasi_spill(
     s.push_str(&emit_store_dispatcher("tvm_store_i64", "i64.store", "i64", p.n_pools));
     s.push_str(&emit_bulk_copy_dispatcher(p.n_pools));
     s.push_str(&emit_bulk_copy_from_default_dispatcher(p.n_pools));
+    s.push_str(&emit_specialized_copy_helpers(p.n_pools));
     // 4. WASI spill helpers.
     s.push_str(&emit_wasi_spill_helpers(p.n_pools));
     // 5. User body.

@@ -85,6 +85,12 @@ pub use facade::{Dispatch, GuestTvm};
 pub use module::{tvm_guest_mm_module_template, ModuleParams};
 pub use wasi_spill::{emit_wasi_spill_helpers, tvm_guest_mm_module_with_wasi_spill};
 
-/// Default number of pools per generated module. 16 × 4 GiB = 64 GiB
-/// addressable working set per guest.
-pub const DEFAULT_POOL_COUNT: u32 = 16;
+/// Default number of pools per generated module. 64 × 4 GiB = 256 GiB
+/// addressable working set per guest. Pages allocate lazily, so the
+/// actual commitment is bounded by what the workload touches.
+///
+/// Bumped from 16 (64 GiB) once the BST dispatch made per-byte access
+/// against many pools cheap. For workloads that need >256 GiB, raise
+/// `n_pools` further at module-build time — the cap is module size,
+/// not anything architectural.
+pub const DEFAULT_POOL_COUNT: u32 = 64;

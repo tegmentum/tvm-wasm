@@ -45,9 +45,9 @@ fn wasi_spill_module_has_required_exports() -> anyhow::Result<()> {
     assert!(exports.iter().any(|e| e == "tvm_spill_to_fd"));
     assert!(exports.iter().any(|e| e == "tvm_load_from_fd"));
 
-    // Memories should still all be present.
+    // Memories should still all be present — one per pool.
     let n_memories = exports.iter().filter(|e| e.starts_with("mem")).count();
-    assert_eq!(n_memories, 16);
+    assert_eq!(n_memories, tvm_guest_mm::DEFAULT_POOL_COUNT as usize);
 
     Ok(())
 }
