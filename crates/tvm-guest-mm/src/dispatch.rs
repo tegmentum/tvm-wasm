@@ -140,6 +140,82 @@ pub(crate) fn emit_bulk_copy_from_default_dispatcher(n_pools: u32) -> String {
 /// Naming: `tvm_copy_to_default_p{K}(src_off, dst_off, len)` copies
 /// from pool K → default; `tvm_copy_from_default_p{K}(dst_off, src_off,
 /// len)` copies from default → pool K.
+/// SIMD-accelerated kernels that read from one of the data pools.
+///
+/// `tvm_simd_sum_u8_p{K}(off, len) -> i64` returns the unsigned sum
+/// of `len` bytes starting at `(pool K, off)`. The loop processes 16
+/// bytes per iteration:
+///
+/// ```text
+/// v = v128.load <pool K> off
+/// // 16 u8 → 8 u16 (pairwise add)
+/// pairs = i16x8.extadd_pairwise_i8x16_u(v)
+/// // 8 u16  → 4 u32 (pairwise add)
+/// quads = i32x4.extadd_pairwise_i16x8_u(pairs)
+/// // 4 u32  → 2 u64 (split + extend) and accumulate
+/// acc += i64x2.extend_low_i32x4_u(quads)
+///      + i64x2.extend_high_i32x4_u(quads)
+/// ```
+///
+/// Wasm SIMD doesn't have a 32→64 pairwise extadd, so we widen with
+/// `extend_low/high` and add both halves into the i64x2 accumulator.
+/// At the tail, any remaining `len % 16` bytes are summed with a
+/// scalar `i64.load8_u` loop. Final reduce is `lane0 + lane1`.
+///
+/// **Statically specialized per pool**, so the `v128.load` and
+/// `i64.load8_u` carry constant memory immediates — zero dispatch on
+/// the hot path. Real wins for sum / hash / xor / count workloads.
+/// For pure copy-pool-to-default, `tvm_copy_to_default_p{K}` already
+/// runs at hardware bandwidth and SIMD adds nothing on top.
+pub(crate) fn emit_specialized_simd_kernels(n_pools: u32) -> String {
+    let mut s = String::new();
+    for k in 0..n_pools {
+        s.push_str(&format!(
+            r#"  (func $tvm_simd_sum_u8_p{k} (export "tvm_simd_sum_u8_p{k}")
+        (param $off i32) (param $len i32) (result i64)
+    (local $cur i32) (local $end i32) (local $vec_end i32)
+    (local $acc v128) (local $quads v128) (local $scalar i64)
+    (local.set $cur (local.get $off))
+    (local.set $end (i32.add (local.get $off) (local.get $len)))
+    (local.set $vec_end
+      (i32.add (local.get $off)
+               (i32.and (local.get $len) (i32.const -16))))
+    (local.set $acc (v128.const i64x2 0 0))
+    (block $vec_done
+      (loop $vec_continue
+        (br_if $vec_done (i32.eq (local.get $cur) (local.get $vec_end)))
+        (local.set $quads
+          (i32x4.extadd_pairwise_i16x8_u
+            (i16x8.extadd_pairwise_i8x16_u
+              (v128.load {k} (local.get $cur)))))
+        (local.set $acc
+          (i64x2.add
+            (i64x2.add
+              (local.get $acc)
+              (i64x2.extend_low_i32x4_u (local.get $quads)))
+            (i64x2.extend_high_i32x4_u (local.get $quads))))
+        (local.set $cur (i32.add (local.get $cur) (i32.const 16)))
+        (br $vec_continue)))
+    (local.set $scalar
+      (i64.add
+        (i64x2.extract_lane 0 (local.get $acc))
+        (i64x2.extract_lane 1 (local.get $acc))))
+    (block $tail_done
+      (loop $tail_continue
+        (br_if $tail_done (i32.eq (local.get $cur) (local.get $end)))
+        (local.set $scalar
+          (i64.add (local.get $scalar)
+                   (i64.load8_u {k} (local.get $cur))))
+        (local.set $cur (i32.add (local.get $cur) (i32.const 1)))
+        (br $tail_continue)))
+    (local.get $scalar))
+"#,
+            k = k,
+        ));
+    }
+    s
+}
+
 pub(crate) fn emit_specialized_copy_helpers(n_pools: u32) -> String {
     let mut s = String::new();
     for k in 0..n_pools {
@@ -340,6 +416,14 @@ mod tests {
         // 1 bounds-guard `if` + 63 BST internal `if`s = 64.
         let count = s.matches("(if ").count();
         assert_eq!(count, 64, "module:\n{}", s);
+    }
+
+    #[test]
+    fn simd_kernels_parse() {
+        for n in [1u32, 4, 16] {
+            let body = emit_specialized_simd_kernels(n);
+            wat::parse_str(&wrap(n, &body)).expect("parse");
+        }
     }
 
     /// Specialized helper is a single `memory.copy` — one line of body.

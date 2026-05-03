@@ -322,6 +322,40 @@ fn run_guest_mm_bulk_specialized(size: u32, data: &[u8]) -> anyhow::Result<Vec<D
     })
 }
 
+// ---------- Guest-mm SIMD sum kernel ----------
+//
+// Calls the SIMD-specialized `tvm_simd_sum_u8_p1` directly — sums
+// pool 1's bytes with no dispatch and no copy-then-loop. Pure
+// SIMD-in-place.
+
+fn run_guest_mm_simd(size: u32, data: &[u8]) -> anyhow::Result<Vec<Duration>> {
+    let user_body = r#"
+        (func (export "sum_via_simd") (param $off i32) (param $len i32) (result i64)
+          (call $tvm_simd_sum_u8_p1 (local.get $off) (local.get $len)))
+    "#;
+    let p = ModuleParams {
+        n_pools: 4,
+        initial_pages_per_pool: ((size as u64 + 65535) / 65536).max(1) as u32,
+        max_pages_per_pool: 16,
+        user_body: user_body.to_string(),
+    };
+    let wat = tvm_guest_mm_module_template(&p);
+    let mut config = Config::new();
+    config.wasm_multi_memory(true);
+    let engine = Engine::new(&config)?;
+    let module = Module::new(&engine, &wat)?;
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store = Store::new(&engine, ());
+    let instance = linker.instantiate(&mut store, &module)?;
+    let mem1 = instance.get_memory(&mut store, "mem1").unwrap();
+    mem1.write(&mut store, 0, data)?;
+    let sum = instance.get_typed_func::<(i32, i32), i64>(&mut store, "sum_via_simd")?;
+    time_loop(|| {
+        let _ = sum.call(&mut store, (0, size as i32))?;
+        Ok(())
+    })
+}
+
 fn main() -> anyhow::Result<()> {
     println!("==> tvm-guest-mm full-matrix benchmark");
     println!("    {} samples + {} warmup", SAMPLES, WARMUP);
@@ -338,9 +372,10 @@ fn main() -> anyhow::Result<()> {
         let mm  = summarize("host TVM-MM", run_host_mm(size, &data)?, size);
         let gmm = summarize("guest-mm bulk", run_guest_mm_bulk(size, &data)?, size);
         let gms = summarize("guest-mm spec", run_guest_mm_bulk_specialized(size, &data)?, size);
+        let sim = summarize("guest-mm simd", run_guest_mm_simd(size, &data)?, size);
 
         println!("--- size = {} bytes ---", size);
-        for r in &[&m32, &m64, &raw, &mm, &gmm, &gms] {
+        for r in &[&m32, &m64, &raw, &mm, &gmm, &gms, &sim] {
             println!(
                 "  {:<16} mean={:>10.0}ns  p99={:>10}ns  {:>5.2} GiB/s",
                 r.label, r.mean_ns, r.p99_ns, r.gib_per_s
@@ -349,7 +384,7 @@ fn main() -> anyhow::Result<()> {
 
         // Compare each non-M32 variant to the M32 baseline.
         let baseline = m32.mean_ns;
-        for r in &[&m64, &raw, &mm, &gmm, &gms] {
+        for r in &[&m64, &raw, &mm, &gmm, &gms, &sim] {
             let speedup = baseline / r.mean_ns;
             let u = mann_whitney_u(&m32.raw, &r.raw);
             println!(
