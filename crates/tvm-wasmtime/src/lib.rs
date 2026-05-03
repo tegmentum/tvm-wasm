@@ -48,6 +48,7 @@ pub mod macros;
 pub mod memory_factory;
 pub mod prelude;
 pub mod raw_linker;
+pub mod region_view;
 pub mod runtime_persist;
 pub mod shared_host;
 
@@ -65,3 +66,4 @@ pub use runtime_persist::{load_runtime_region, spill_runtime_region};
 pub use concurrent_host::ConcurrentTvmHost;
 pub use shared_host::SharedTvmHost;
 pub use memory_factory::{RuntimeMemoryRegion, WasmtimeMemoryRegion, WASM_PAGE_SIZE};
+pub use region_view::RegionView;

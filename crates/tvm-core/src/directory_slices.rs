@@ -61,4 +61,21 @@ impl RegionDirectory<VecBackedRegion> {
         let memory = entry.memory.as_mut().ok_or(TvmError::NotResident)?;
         Ok(&mut memory.data_mut()[start..end])
     }
+
+    /// Whole-region immutable view by region id (no Handle / generation
+    /// check — the region itself is identified, not a slot within it).
+    /// Used by the wasm-Memory-shaped `RegionView` facade.
+    pub fn region_full_slice(&self, region_id: u16) -> Result<&[u8]> {
+        let entry = self.entry(region_id)?;
+        let memory = entry.memory.as_ref().ok_or(TvmError::NotResident)?;
+        Ok(&memory.as_slice()[..entry.meta.capacity as usize])
+    }
+
+    /// Whole-region mutable view by region id.
+    pub fn region_full_slice_mut(&mut self, region_id: u16) -> Result<&mut [u8]> {
+        let entry = self.entry_mut(region_id)?;
+        let cap = entry.meta.capacity as usize;
+        let memory = entry.memory.as_mut().ok_or(TvmError::NotResident)?;
+        Ok(&mut memory.data_mut()[..cap])
+    }
 }

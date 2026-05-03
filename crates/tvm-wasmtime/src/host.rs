@@ -619,6 +619,19 @@ impl TvmHost {
             .map(|p| p as u32))
     }
 
+    /// Construct a wasm-Memory-shaped view over a region. See
+    /// [`crate::region_view::RegionView`] for the shape — `data`,
+    /// `data_mut`, `read`, `write`, `copy_within`, `fill`, etc., as
+    /// close to `wasmtime::Memory` as TVM semantics allow.
+    pub fn region_view(
+        &mut self,
+        region_id: u16,
+    ) -> Result<crate::region_view::RegionView<'_>, CoreError> {
+        // Validate the region exists before handing out a view.
+        let _ = self.directory.region_info(region_id)?;
+        Ok(crate::region_view::RegionView::new(self, region_id))
+    }
+
     /// Look up a region's metadata, hitting the cache first. On miss, falls
     /// back to the directory and populates the cache. Hot path for the raw
     /// linker.

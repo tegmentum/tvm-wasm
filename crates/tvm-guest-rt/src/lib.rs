@@ -205,6 +205,108 @@ impl RegionPtr {
     }
 }
 
+// ---------- Typed load/store on RegionPtr ----------
+//
+// Wasm-instruction-shaped accessors. Each is a thin wrapper around
+// the existing `read` / `write` raw imports — one trampoline,
+// little-endian byte order to match wasm load/store conventions.
+//
+// The shapes mirror wasm's typed load/store:
+//   load_u8  / store_u8        ↔ i32.load8_u  / i32.store8
+//   load_u16 / store_u16       ↔ i32.load16_u / i32.store16
+//   load_u32 / store_u32       ↔ i32.load     / i32.store
+//   load_i64 / store_i64       ↔ i64.load     / i64.store
+//   load_f32 / store_f32       ↔ f32.load     / f32.store
+//   load_f64 / store_f64       ↔ f64.load     / f64.store
+//
+// All take an offset relative to the RegionPtr's base. Bounds
+// checking happens host-side via `read` / `write`.
+
+impl RegionPtr {
+    /// Load a single byte (`i32.load8_u` shape).
+    pub fn load_u8(self, offset: u32) -> Result<u8> {
+        let mut buf = [0u8; 1];
+        self.with_offset(offset).read(&mut buf)?;
+        Ok(buf[0])
+    }
+
+    /// Store a single byte (`i32.store8` shape).
+    pub fn store_u8(self, offset: u32, value: u8) -> Result<()> {
+        self.with_offset(offset).write(&[value])
+    }
+
+    /// Load a u16 in little-endian byte order.
+    pub fn load_u16_le(self, offset: u32) -> Result<u16> {
+        let mut buf = [0u8; 2];
+        self.with_offset(offset).read(&mut buf)?;
+        Ok(u16::from_le_bytes(buf))
+    }
+
+    /// Store a u16 in little-endian byte order.
+    pub fn store_u16_le(self, offset: u32, value: u16) -> Result<()> {
+        self.with_offset(offset).write(&value.to_le_bytes())
+    }
+
+    /// Load a u32 in little-endian byte order (`i32.load` shape).
+    pub fn load_u32_le(self, offset: u32) -> Result<u32> {
+        let mut buf = [0u8; 4];
+        self.with_offset(offset).read(&mut buf)?;
+        Ok(u32::from_le_bytes(buf))
+    }
+
+    /// Store a u32 in little-endian byte order (`i32.store` shape).
+    pub fn store_u32_le(self, offset: u32, value: u32) -> Result<()> {
+        self.with_offset(offset).write(&value.to_le_bytes())
+    }
+
+    /// Load an i64 in little-endian byte order (`i64.load` shape).
+    pub fn load_i64_le(self, offset: u32) -> Result<i64> {
+        let mut buf = [0u8; 8];
+        self.with_offset(offset).read(&mut buf)?;
+        Ok(i64::from_le_bytes(buf))
+    }
+
+    /// Store an i64 in little-endian byte order (`i64.store` shape).
+    pub fn store_i64_le(self, offset: u32, value: i64) -> Result<()> {
+        self.with_offset(offset).write(&value.to_le_bytes())
+    }
+
+    /// Load an f32 in little-endian byte order (`f32.load` shape).
+    pub fn load_f32_le(self, offset: u32) -> Result<f32> {
+        let mut buf = [0u8; 4];
+        self.with_offset(offset).read(&mut buf)?;
+        Ok(f32::from_le_bytes(buf))
+    }
+
+    /// Store an f32 in little-endian byte order.
+    pub fn store_f32_le(self, offset: u32, value: f32) -> Result<()> {
+        self.with_offset(offset).write(&value.to_le_bytes())
+    }
+
+    /// Load an f64 in little-endian byte order (`f64.load` shape).
+    pub fn load_f64_le(self, offset: u32) -> Result<f64> {
+        let mut buf = [0u8; 8];
+        self.with_offset(offset).read(&mut buf)?;
+        Ok(f64::from_le_bytes(buf))
+    }
+
+    /// Store an f64 in little-endian byte order.
+    pub fn store_f64_le(self, offset: u32, value: f64) -> Result<()> {
+        self.with_offset(offset).write(&value.to_le_bytes())
+    }
+
+    /// Construct a derived `RegionPtr` whose offset within its region
+    /// is shifted by `delta`. The packed encoding has region_id and
+    /// generation in the high bits and the byte offset in the low 32
+    /// bits, so we just add to the low half.
+    fn with_offset(self, delta: u32) -> RegionPtr {
+        let lo = ((self.packed as u64) & 0xFFFF_FFFF) as u32;
+        let new_lo = lo.wrapping_add(delta);
+        let high = (self.packed as u64) & 0xFFFF_FFFF_0000_0000;
+        RegionPtr { packed: (high | new_lo as u64) as i64 }
+    }
+}
+
 // ---------- Reducer methods on RegionPtr ----------
 //
 // These wrap the raw `tvm.<op>` imports added on the host side.
