@@ -392,6 +392,102 @@ where
         },
     )?;
 
+    linker.func_wrap(
+        "tvm",
+        "count_byte",
+        |mut caller: Caller<'_, T>, packed: i64, len: i32, byte: i32| -> i32 {
+            let h = Handle::unpack(packed as u64);
+            let host = caller.data_mut().as_mut();
+            match host.region_count_byte(h, len as u32, byte as u8) {
+                Ok(c) => c as i32,
+                Err(e) => {
+                    host.last_raw_error = err_code(&e);
+                    -1
+                }
+            }
+        },
+    )?;
+
+    linker.func_wrap(
+        "tvm",
+        "eq",
+        |mut caller: Caller<'_, T>, packed_a: i64, packed_b: i64, len: i32| -> i32 {
+            let ha = Handle::unpack(packed_a as u64);
+            let hb = Handle::unpack(packed_b as u64);
+            let host = caller.data_mut().as_mut();
+            match host.region_eq(ha, hb, len as u32) {
+                Ok(true) => 1,
+                Ok(false) => 0,
+                Err(e) => {
+                    host.last_raw_error = err_code(&e);
+                    -1
+                }
+            }
+        },
+    )?;
+
+    linker.func_wrap(
+        "tvm",
+        "min_max_u8",
+        // Returns packed (min << 8) | max into low 16 bits; -1 on err.
+        |mut caller: Caller<'_, T>, packed: i64, len: i32| -> i32 {
+            let h = Handle::unpack(packed as u64);
+            let host = caller.data_mut().as_mut();
+            match host.region_min_max_u8(h, len as u32) {
+                Ok((lo, hi)) => ((lo as i32) << 8) | (hi as i32),
+                Err(e) => {
+                    host.last_raw_error = err_code(&e);
+                    -1
+                }
+            }
+        },
+    )?;
+
+    linker.func_wrap(
+        "tvm",
+        "xor_into_region",
+        |mut caller: Caller<'_, T>, packed_src: i64, packed_dst: i64, len: i32| -> i32 {
+            let src = Handle::unpack(packed_src as u64);
+            let dst = Handle::unpack(packed_dst as u64);
+            let host = caller.data_mut().as_mut();
+            match host.region_xor_into_region(src, dst, len as u32) {
+                Ok(()) => ERR_OK,
+                Err(e) => err_code(&e),
+            }
+        },
+    )?;
+
+    // Histogram needs to write 1024 bytes (256 u32s LE) into the guest's
+    // memory at `out_ptr`. Caller must ensure the destination is long
+    // enough.
+    linker.func_wrap(
+        "tvm",
+        "byte_histogram",
+        move |mut caller: Caller<'_, T>, packed: i64, len: i32, out_ptr: i32| -> i32 {
+            let h = Handle::unpack(packed as u64);
+            let out_off = out_ptr as usize;
+            let required_end = match out_off.checked_add(1024) {
+                Some(e) => e,
+                None => return ERR_GUEST_MEMORY,
+            };
+            let mem = match cached_guest_memory_view(
+                &mut caller, memory_name, required_end,
+            ) {
+                Some((m, _, _)) => m,
+                None => return ERR_GUEST_MEMORY,
+            };
+            let host = caller.data_mut().as_mut();
+            let mut buf = [0u8; 1024];
+            if let Err(e) = host.region_byte_histogram(h, len as u32, &mut buf) {
+                return err_code(&e);
+            }
+            if mem.write(&mut caller, out_off, &buf).is_err() {
+                return ERR_GUEST_MEMORY;
+            }
+            ERR_OK
+        },
+    )?;
+
     // Suppress unused warning when memory name is the default.
     let _ = guest_memory::<T>;
 

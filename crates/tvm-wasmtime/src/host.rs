@@ -293,8 +293,14 @@ impl TvmHost {
     }
 
     /// FNV-1a hash of `len` bytes. 64-bit variant. Cheap, decent
-    /// distribution, autovec-friendly. For cryptographic hashes use
-    /// a real digest crate over `region_slice_at`.
+    /// distribution. For cryptographic hashes use a real digest crate
+    /// over `region_slice_at`.
+    ///
+    /// Note: FNV-1a doesn't autovec — each byte's `wrapping_mul`
+    /// carries state across iterations. Throughput is bounded by the
+    /// 64-bit multiplier latency (~3 ns/byte on modern x86). Use a
+    /// SIMD-friendly hash (xxhash, blake3) over `region_slice_at` if
+    /// you need bandwidth.
     pub fn region_hash_fnv1a(
         &mut self,
         handle: CoreHandle,
@@ -307,6 +313,118 @@ impl TvmHost {
             h = h.wrapping_mul(0x100000001b3);
         }
         Ok(h)
+    }
+
+    /// Count how many bytes in the first `len` bytes equal `byte`.
+    /// Maxes at `len`, so a u32 suffices.
+    pub fn region_count_byte(
+        &mut self,
+        handle: CoreHandle,
+        len: u32,
+        byte: u8,
+    ) -> Result<u32, CoreError> {
+        let bytes = self.directory.region_slice_at(handle, len)?;
+        Ok(bytes.iter().filter(|&&b| b == byte).count() as u32)
+    }
+
+    /// Compare `len` bytes from two regions. Returns `true` iff every
+    /// byte matches; uses `<[u8]>::eq` which short-circuits on first
+    /// mismatch and autovec's the equal-prefix portion.
+    pub fn region_eq(
+        &mut self,
+        a: CoreHandle,
+        b: CoreHandle,
+        len: u32,
+    ) -> Result<bool, CoreError> {
+        // Two slice borrows from the same directory require a small
+        // dance: validate first into a fresh borrow, then the second.
+        // Both immutable, no aliasing problem if the regions differ.
+        let lhs = self.directory.region_slice_at(a, len)?;
+        let lhs_ptr = lhs.as_ptr();
+        let lhs_len = lhs.len();
+        let rhs = self.directory.region_slice_at(b, len)?;
+        // SAFETY: lhs_ptr/len came from a successful region_slice_at on
+        // an immutable directory borrow that we still hold (no mutation
+        // happened between the two calls). The slice is valid for the
+        // duration of this function.
+        let lhs = unsafe { core::slice::from_raw_parts(lhs_ptr, lhs_len) };
+        Ok(lhs == rhs)
+    }
+
+    /// Min and max of bytes in the first `len` bytes. Returns
+    /// `(min, max)`. `len == 0` returns `(255, 0)` as the conventional
+    /// empty-range sentinel.
+    pub fn region_min_max_u8(
+        &mut self,
+        handle: CoreHandle,
+        len: u32,
+    ) -> Result<(u8, u8), CoreError> {
+        let bytes = self.directory.region_slice_at(handle, len)?;
+        let mut lo: u8 = 255;
+        let mut hi: u8 = 0;
+        for &b in bytes {
+            if b < lo { lo = b; }
+            if b > hi { hi = b; }
+        }
+        Ok((lo, hi))
+    }
+
+    /// XOR the first `len` bytes of `src` into the same range of
+    /// `dst`, byte-wise (`dst[i] ^= src[i]`). Useful for delta
+    /// encoding, parity, stream-cipher keystream application.
+    /// `OutOfBounds` if either side is too short. Errors if `src` and
+    /// `dst` resolve to the same region (would be a self-XOR-zero,
+    /// silent footgun).
+    pub fn region_xor_into_region(
+        &mut self,
+        src: CoreHandle,
+        dst: CoreHandle,
+        len: u32,
+    ) -> Result<(), CoreError> {
+        if src.region_id == dst.region_id {
+            return Err(CoreError::PolicyViolation);
+        }
+        let src_ptr;
+        let src_len_actual;
+        {
+            let s = self.directory.region_slice_at(src, len)?;
+            src_ptr = s.as_ptr();
+            src_len_actual = s.len();
+        }
+        let dst_slice = self.directory.region_slice_mut_at(dst, len)?;
+        // SAFETY: src and dst belong to different regions (id check
+        // above), so the immutable src borrow doesn't alias dst.
+        // VecBackedRegion stores each region in its own Vec<u8>, so
+        // distinct ids guarantee distinct allocations.
+        let src_slice = unsafe {
+            core::slice::from_raw_parts(src_ptr, src_len_actual)
+        };
+        for (d, s) in dst_slice.iter_mut().zip(src_slice.iter()) {
+            *d ^= *s;
+        }
+        Ok(())
+    }
+
+    /// Byte-frequency histogram. Writes 256 little-endian u32s into
+    /// `out` (must be `1024` bytes); position `i` holds the count of
+    /// bytes equal to `i`. Counts saturate at `u32::MAX` (in practice
+    /// unreachable since region capacity is also u32).
+    pub fn region_byte_histogram(
+        &mut self,
+        handle: CoreHandle,
+        len: u32,
+        out: &mut [u8; 1024],
+    ) -> Result<(), CoreError> {
+        let bytes = self.directory.region_slice_at(handle, len)?;
+        let mut counts = [0u32; 256];
+        for &b in bytes {
+            counts[b as usize] = counts[b as usize].saturating_add(1);
+        }
+        // Pack as little-endian u32s.
+        for (i, c) in counts.iter().enumerate() {
+            out[i * 4..i * 4 + 4].copy_from_slice(&c.to_le_bytes());
+        }
+        Ok(())
     }
 
     /// Look up a region's metadata, hitting the cache first. On miss, falls

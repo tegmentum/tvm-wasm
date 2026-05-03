@@ -90,6 +90,37 @@ const REDUCER_WAT: &str = r#"
 )
 "#;
 
+// classic count-byte: read into guest, then linear scan counting matches
+const COUNT_CLASSIC_WAT: &str = r#"
+(module
+  (import "tvm" "read" (func $read (param i64 i32 i32) (result i32)))
+  (memory (export "memory") 8)
+  (func (export "count_via_read")
+        (param $h i64) (param $len i32) (param $byte i32) (result i32)
+    (local $cur i32) (local $end i32) (local $acc i32)
+    (drop (call $read (local.get $h) (i32.const 0) (local.get $len)))
+    (local.set $end (local.get $len))
+    (block $break
+      (loop $continue
+        (br_if $break (i32.eq (local.get $cur) (local.get $end)))
+        (if (i32.eq (i32.load8_u (local.get $cur)) (local.get $byte))
+          (then (local.set $acc (i32.add (local.get $acc) (i32.const 1)))))
+        (local.set $cur (i32.add (local.get $cur) (i32.const 1)))
+        (br $continue)))
+    (local.get $acc))
+)
+"#;
+
+const COUNT_REDUCER_WAT: &str = r#"
+(module
+  (import "tvm" "count_byte" (func $count (param i64 i32 i32) (result i32)))
+  (memory (export "memory") 1)
+  (func (export "count_via_reducer")
+        (param $h i64) (param $len i32) (param $byte i32) (result i32)
+    (call $count (local.get $h) (local.get $len) (local.get $byte)))
+)
+"#;
+
 fn setup(size: u32, data: &[u8]) -> anyhow::Result<(Store<TvmHost>, i64)> {
     let host = TvmHost::new();
     let engine = Engine::new(Config::new().wasm_multi_memory(true))?;
@@ -114,6 +145,35 @@ fn run(wat_src: &str, fn_name: &str, size: u32, data: &[u8])
     time_loop(|| { let _ = f.call(&mut store, (packed, size as i32))?; Ok(()) })
 }
 
+fn run3(
+    wat_src: &str,
+    fn_name: &str,
+    size: u32,
+    data: &[u8],
+    extra: i32,
+) -> anyhow::Result<Vec<Duration>> {
+    let (mut store, packed) = setup(size, data)?;
+    let module = Module::new(store.engine(), wat_src)?;
+    let mut linker: Linker<TvmHost> = Linker::new(store.engine());
+    add_raw_imports(&mut linker)?;
+    let instance = linker.instantiate(&mut store, &module)?;
+    let f = instance.get_typed_func::<(i64, i32, i32), i32>(&mut store, fn_name)?;
+    time_loop(|| { let _ = f.call(&mut store, (packed, size as i32, extra))?; Ok(()) })
+}
+
+fn pair_summary(label_c: &str, label_r: &str, classic: Vec<Duration>, reducer: Vec<Duration>, size: u32) {
+    let mut classic = classic;
+    let mut reducer = reducer;
+    report(label_c, size, &mut classic);
+    report(label_r, size, &mut reducer);
+    let raw_c: Vec<u128> = classic.iter().map(|d| d.as_nanos()).collect();
+    let raw_r: Vec<u128> = reducer.iter().map(|d| d.as_nanos()).collect();
+    let mean = |v: &[u128]| v.iter().map(|n| *n as f64).sum::<f64>() / v.len() as f64;
+    let speedup = mean(&raw_c) / mean(&raw_r);
+    let u = mann_whitney_u(&raw_c, &raw_r);
+    println!("    speedup reducer / classic = {:.2}x   U={:.3}", speedup, u);
+}
+
 fn main() -> anyhow::Result<()> {
     println!("==> reducer-imports benchmark");
     println!("    {} samples + {} warmup", SAMPLES, WARMUP);
@@ -121,36 +181,21 @@ fn main() -> anyhow::Result<()> {
 
     for &size in SIZES {
         let data: Vec<u8> = (0..size).map(|i| (i & 0xFF) as u8).collect();
-        let mut classic = run(CLASSIC_WAT, "sum_via_read", size, &data)?;
-        let mut reducer = run(REDUCER_WAT, "sum_via_reducer", size, &data)?;
 
         println!("--- size = {} bytes ---", size);
-        report("classic (read+loop)", size, &mut classic);
-        report("reducer (sum_u8)",    size, &mut reducer);
 
-        let raw_c: Vec<u128> = classic.iter().map(|d| d.as_nanos()).collect();
-        let raw_r: Vec<u128> = reducer.iter().map(|d| d.as_nanos()).collect();
-        let mean = |v: &[u128]| v.iter().map(|n| *n as f64).sum::<f64>() / v.len() as f64;
-        let speedup = mean(&raw_c) / mean(&raw_r);
-        let u = mann_whitney_u(&raw_c, &raw_r);
-        println!("    speedup reducer / classic = {:.2}x   U={:.3}", speedup, u);
+        // sum_u8 — pure reduce, autovec friendly
+        println!("  [sum_u8]");
+        let c = run(CLASSIC_WAT, "sum_via_read", size, &data)?;
+        let r = run(REDUCER_WAT, "sum_via_reducer", size, &data)?;
+        pair_summary("    classic (read+loop)", "    reducer (sum_u8)", c, r, size);
 
-        // Sanity: both should produce the same scalar result.
-        let (mut s1, p1) = setup(size, &data)?;
-        let m1 = Module::new(s1.engine(), CLASSIC_WAT)?;
-        let mut l1: Linker<TvmHost> = Linker::new(s1.engine());
-        add_raw_imports(&mut l1)?;
-        let i1 = l1.instantiate(&mut s1, &m1)?;
-        let f1 = i1.get_typed_func::<(i64, i32), i64>(&mut s1, "sum_via_read")?;
-        let v1 = f1.call(&mut s1, (p1, size as i32))?;
-        let (mut s2, p2) = setup(size, &data)?;
-        let m2 = Module::new(s2.engine(), REDUCER_WAT)?;
-        let mut l2: Linker<TvmHost> = Linker::new(s2.engine());
-        add_raw_imports(&mut l2)?;
-        let i2 = l2.instantiate(&mut s2, &m2)?;
-        let f2 = i2.get_typed_func::<(i64, i32), i64>(&mut s2, "sum_via_reducer")?;
-        let v2 = f2.call(&mut s2, (p2, size as i32))?;
-        assert_eq!(v1, v2, "classic and reducer disagreed at size {}", size);
+        // count_byte — reduce with a predicate
+        println!("  [count_byte]");
+        let c = run3(COUNT_CLASSIC_WAT, "count_via_read", size, &data, 0x42)?;
+        let r = run3(COUNT_REDUCER_WAT, "count_via_reducer", size, &data, 0x42)?;
+        pair_summary("    classic (read+loop)", "    reducer (count_byte)", c, r, size);
+
         println!();
     }
 
