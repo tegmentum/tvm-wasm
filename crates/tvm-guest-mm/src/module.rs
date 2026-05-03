@@ -4,9 +4,10 @@
 
 use crate::dispatch::{
     emit_bulk_copy_dispatcher, emit_bulk_copy_from_default_dispatcher,
-    emit_load_dispatcher, emit_specialized_copy_helpers,
-    emit_specialized_simd_kernels, emit_specialized_simd_reducers,
-    emit_specialized_typed_helpers, emit_store_dispatcher,
+    emit_indirect_load_dispatchers, emit_load_dispatcher,
+    emit_specialized_copy_helpers, emit_specialized_simd_kernels,
+    emit_specialized_simd_reducers, emit_specialized_typed_helpers,
+    emit_store_dispatcher,
 };
 
 #[derive(Clone, Debug)]
@@ -77,6 +78,13 @@ pub fn tvm_guest_mm_module_template(p: &ModuleParams) -> String {
     // Specialized typed load/store helpers per pool. Skips the BST
     // dispatch when the pool is already known.
     s.push_str(&emit_specialized_typed_helpers(p.n_pools));
+
+    // Indirect-table dispatchers — `tvm_load_u8_indirect` etc. — same
+    // (pool, off) signature as the BST versions but using
+    // call_indirect against a function table populated with the
+    // per-pool specialized helpers above. Drop-in alternative; whether
+    // it beats the BST is engine-dependent (see bench).
+    s.push_str(&emit_indirect_load_dispatchers(p.n_pools));
 
     // SIMD reduce kernels — `tvm_simd_sum_u8_p{K}` for each pool. 16
     // bytes per iter via v128.load + widening fused adds. Static

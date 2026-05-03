@@ -235,5 +235,74 @@ fn main() -> anyhow::Result<()> {
         report(&format!("per-byte n_pools={}", n_pools), size, &mut t);
     }
 
+    // BST vs call_indirect dispatch — same per-byte sum loop, two
+    // different dispatchers. Settles whether the indirect-table form
+    // can beat ~log₂(N) compares on wasmtime.
+    println!();
+    println!("==> dispatch shape comparison (size = 16 KiB, n_pools = 64)");
+    let mut bst = run_dispatch_named(size, &data, 64, "tvm_load_u8")?;
+    let mut indirect = run_dispatch_named(size, &data, 64, "tvm_load_u8_indirect")?;
+    report("BST (tvm_load_u8)  ", size, &mut bst);
+    report("call_indirect      ", size, &mut indirect);
+    let mean_d = |v: &[Duration]| v.iter().map(|d| d.as_nanos() as f64).sum::<f64>()
+        / v.len() as f64;
+    let speedup = mean_d(&bst) / mean_d(&indirect);
+    let raw_b: Vec<u128> = bst.iter().map(|d| d.as_nanos()).collect();
+    let raw_i: Vec<u128> = indirect.iter().map(|d| d.as_nanos()).collect();
+    let u = mann_whitney_u(&raw_b, &raw_i);
+    println!("    indirect / BST = {:.2}x   U={:.3}", speedup, u);
+
     Ok(())
+}
+
+/// Per-byte sum over a fixed buffer, calling the named dispatch
+/// function (either the BST `tvm_load_u8` or the call_indirect
+/// `tvm_load_u8_indirect`).
+fn run_dispatch_named(
+    size: u32,
+    data: &[u8],
+    n_pools: u32,
+    dispatch_fn_name: &str,
+) -> anyhow::Result<Vec<Duration>> {
+    let user_body = format!(
+        r#"
+        (func (export "buffer_ptr") (result i32) (i32.const 0))
+        (func (export "sum_via_dispatch") (param $ptr i32) (param $len i32) (result i64)
+          (local $i i32) (local $acc i64)
+          (block $break
+            (loop $continue
+              (br_if $break (i32.eq (local.get $i) (local.get $len)))
+              (local.set $acc
+                (i64.add (local.get $acc)
+                         (i64.extend_i32_u
+                           (call ${disp}
+                             (i32.const 1)
+                             (i32.add (local.get $ptr) (local.get $i))))))
+              (local.set $i (i32.add (local.get $i) (i32.const 1)))
+              (br $continue)))
+          (local.get $acc))
+    "#,
+        disp = dispatch_fn_name
+    );
+    let p = ModuleParams {
+        n_pools,
+        initial_pages_per_pool: ((size as u32 + 65535) / 65536).max(1),
+        max_pages_per_pool: 16,
+        user_body,
+    };
+    let wat = tvm_guest_mm_module_template(&p);
+    let mut config = Config::new();
+    config.wasm_multi_memory(true);
+    let engine = Engine::new(&config)?;
+    let module = Module::new(&engine, &wat)?;
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store = Store::new(&engine, ());
+    let instance = linker.instantiate(&mut store, &module)?;
+    let mem1 = instance.get_memory(&mut store, "mem1").unwrap();
+    mem1.write(&mut store, 0, data)?;
+    let sum = instance.get_typed_func::<(i32, i32), i64>(&mut store, "sum_via_dispatch")?;
+    time_loop(|| {
+        let _ = sum.call(&mut store, (0, size as i32))?;
+        Ok(())
+    })
 }

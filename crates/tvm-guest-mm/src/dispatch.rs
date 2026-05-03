@@ -682,6 +682,81 @@ pub(crate) fn emit_specialized_copy_helpers(n_pools: u32) -> String {
     s
 }
 
+/// Indirect-table dispatchers for typed loads. Builds a function
+/// table populated with the per-pool specialized helpers, dispatches
+/// via `call_indirect` rather than the BST comparison cascade.
+///
+/// **Empirical result on wasmtime: ~5× slower than BST** (per-byte
+/// sum at n_pools=64: BST = 45 µs, call_indirect = 225 µs). Wasmtime's
+/// indirect-call overhead — signature check, indirect branch, frame
+/// setup — dominates the savings from skipping ~6 compares. The BST
+/// stays the default; these dispatchers are kept emitted so the
+/// `dispatch_shape_comparison` bench remains reproducible and so a
+/// user on a different runtime can A/B test without re-emitting the
+/// module template.
+///
+/// Naming: `tvm_load_u8_indirect`, `tvm_load_u32_indirect`,
+/// `tvm_load_i64_indirect`. Same signature as the BST dispatcher
+/// (`(pool, off) → typed`); drop-in if you somehow find an engine
+/// where indirect wins.
+pub(crate) fn emit_indirect_load_dispatchers(n_pools: u32) -> String {
+    if n_pools == 0 {
+        return String::new();
+    }
+    let mut s = String::new();
+    // Type signatures (use distinct names so `(type ...)` is referable).
+    s.push_str("  (type $tvm_indirect_load_u8 (func (param i32) (result i32)))\n");
+    s.push_str("  (type $tvm_indirect_load_u32 (func (param i32) (result i32)))\n");
+    s.push_str("  (type $tvm_indirect_load_i64 (func (param i32) (result i64)))\n");
+
+    // One table per typed-load family. The inline `(elem ...)` form
+    // declares table size and initial contents in one shot — avoids
+    // the WAT-active-segment ambiguity around `(table $t)` vs bare
+    // `$t` for elem-segment table refs.
+    let mut elem_u8 = String::new();
+    let mut elem_u32 = String::new();
+    let mut elem_i64 = String::new();
+    for k in 0..n_pools {
+        elem_u8.push_str(&format!(" $tvm_load_u8_p{}", k));
+        elem_u32.push_str(&format!(" $tvm_load_u32_p{}", k));
+        elem_i64.push_str(&format!(" $tvm_load_i64_p{}", k));
+    }
+    s.push_str(&format!(
+        "  (table $tvm_tbl_load_u8 funcref (elem{}))\n",
+        elem_u8,
+    ));
+    s.push_str(&format!(
+        "  (table $tvm_tbl_load_u32 funcref (elem{}))\n",
+        elem_u32,
+    ));
+    s.push_str(&format!(
+        "  (table $tvm_tbl_load_i64 funcref (elem{}))\n",
+        elem_i64,
+    ));
+
+    // Dispatcher functions.
+    s.push_str(&format!(
+        r#"  (func $tvm_load_u8_indirect (export "tvm_load_u8_indirect")
+        (param $pool i32) (param $off i32) (result i32)
+    (if (i32.ge_u (local.get $pool) (i32.const {n})) (then unreachable))
+    (call_indirect $tvm_tbl_load_u8 (type $tvm_indirect_load_u8)
+      (local.get $off) (local.get $pool)))
+  (func $tvm_load_u32_indirect (export "tvm_load_u32_indirect")
+        (param $pool i32) (param $off i32) (result i32)
+    (if (i32.ge_u (local.get $pool) (i32.const {n})) (then unreachable))
+    (call_indirect $tvm_tbl_load_u32 (type $tvm_indirect_load_u32)
+      (local.get $off) (local.get $pool)))
+  (func $tvm_load_i64_indirect (export "tvm_load_i64_indirect")
+        (param $pool i32) (param $off i32) (result i64)
+    (if (i32.ge_u (local.get $pool) (i32.const {n})) (then unreachable))
+    (call_indirect $tvm_tbl_load_i64 (type $tvm_indirect_load_i64)
+      (local.get $off) (local.get $pool)))
+"#,
+        n = n_pools,
+    ));
+    s
+}
+
 /// Specialized typed load/store helpers — one per pool, no dispatch.
 /// Mirrors the specialized copy helpers but for single typed
 /// load/store ops. Useful in tight per-element loops where the pool
@@ -911,6 +986,17 @@ mod tests {
         for n in [1u32, 4, 16] {
             let body = emit_specialized_simd_kernels(n);
             wat::parse_str(&wrap(n, &body)).expect("parse");
+        }
+    }
+
+    #[test]
+    fn indirect_load_dispatchers_parse() {
+        for n in [1u32, 2, 4, 16, 64] {
+            let mut body = emit_specialized_typed_helpers(n);
+            body.push_str(&emit_indirect_load_dispatchers(n));
+            wat::parse_str(&wrap(n, &body)).unwrap_or_else(|e| {
+                panic!("indirect dispatchers n={} failed to parse: {}", n, e)
+            });
         }
     }
 
