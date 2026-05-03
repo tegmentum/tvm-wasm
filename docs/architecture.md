@@ -4,42 +4,80 @@ This describes the system as built. The original aspirational specification
 lives in version control; this document is the authoritative description of
 what's actually shipping.
 
+## What TVM is (and isn't)
+
+**TVM's load-bearing primitive is region-and-handle memory management
+with multi-pool composition.** That delivers:
+
+- Working sets > 4 GiB by composing multiple 32-bit-indexed memories.
+- Hardware-isolated regions (engine bounds checks per pool).
+- Generation-checked stale-handle safety.
+- Region lifecycle (pin, compact, residency tier transitions).
+
+**Spill to disk is an optional layer built on top of TVM**, not a core
+capability. The `BackingStore` trait + `FileBackingStore` impl ship in
+`tvm-core` as a convenience for embedders who want them, but a TVM
+deployment doesn't need spill to be a TVM deployment. The pure guest-
+side `tvm-guest-mm` crate is a complete TVM implementation with no
+spill at all.
+
+## Two deployment models
+
+TVM has two flavors that share types and architecture:
+
+| Crate | Where it runs | Use when |
+|---|---|---|
+| `tvm-wasmtime` (host-side) | Host process running wasmtime; guest accesses via imports | You control the wasm host. Useful for: spill-to-disk, multi-tenant accounting, cross-component sharing, observability into guest memory state from outside the guest. |
+| `tvm-guest-mm` (guest-side) | Self-contained inside the wasm module; no host imports needed | Browser deployments, sandboxed platforms, anywhere you can't extend the host. Same region/handle abstraction; no I/O capabilities (no spill). |
+
+Both flavors give you the core TVM properties (multi-pool >4 GiB
+scaling, region lifecycle, stale-handle safety). Choose by deployment
+constraint, not by feature.
+
 ## Layering
 
 ```
-                ┌─────────────────────────────────────────────┐
-                │   guest wasm component / core wasm module   │
-                └─────────────────────────────────────────────┘
-                          ↓ WIT bindings              ↓ raw imports
-   ┌──────────────────────────────────────┐  ┌──────────────────────┐
-   │ TvmHost / SharedTvmHost /            │  │ tvm-wasmtime::       │
-   │ ConcurrentTvmHost                    │  │ raw_linker           │
-   │   • impl manager/bytes/diagnostics   │  │   • tvm.{alloc,read, │
-   │   • auto-fault on Cold + backing     │  │     write,copy_…}    │
-   │   • cache invalidation               │  │                      │
-   └──────────────────────────────────────┘  └──────────────────────┘
-                              ↓
-   ┌─────────────────────────────────────────────────────────────────┐
-   │ tvm-core::RegionDirectory       (single-threaded, &mut self)    │
-   │ tvm-core::ConcurrentDirectory   (per-region locks, &self)       │
-   │   • regions + warm_lru                                          │
-   │   • create / alloc / dealloc / read / write                     │
-   │   • promote_region / demote_region / spill_region / load_region │
-   │   • compact_region (RegionDirectory only — returns HandleRemap) │
-   │   • read_or_fault / write_or_fault (auto-load Cold)             │
-   │   • cross_region_copy / read_into / write_from                  │
-   └─────────────────────────────────────────────────────────────────┘
-        ↓                   ↓                    ↓
- ┌────────────────┐  ┌──────────────────┐  ┌─────────────────────────┐
- │ MemoryRegion   │  │ RegionAllocator  │  │ BackingStore            │
- │ (host-managed) │  │ Bump | Freelist  │  │ FileBackingStore        │
- │ VecBackedRegion│  │ | Slab           │  │ SingleFileBackingStore  │
- └────────────────┘  └──────────────────┘  └─────────────────────────┘
-        ↑                                       ↑
- ┌────────────────────────────────┐
- │ RuntimeMemoryRegion<Cx>        │  ← runtime-bound (wasmtime memory)
- │ + spill/load helpers           │
- └────────────────────────────────┘
+   ┌──────────────────────────────────────────────────────────────┐
+   │             host-side TVM (server runtimes)                  │
+   │  ┌────────────────────────────────────────┐                  │
+   │  │ TvmHost / SharedTvmHost /              │                  │
+   │  │ ConcurrentTvmHost                      │                  │
+   │  │   • WIT manager/bytes/diagnostics      │                  │
+   │  │   • raw_linker tvm.{alloc,read,write}  │                  │
+   │  │   • imported regions (TVM-MM Unified)  │                  │
+   │  │   • OPTIONAL: BackingStore for spill   │                  │
+   │  └────────────────────────────────────────┘                  │
+   └──────────────────────────────────────────────────────────────┘
+                              ↓ both build on
+   ┌──────────────────────────────────────────────────────────────┐
+   │  tvm-core: regions + handles + allocators                    │
+   │    • RegionDirectory / ConcurrentDirectory                   │
+   │    • create / alloc / dealloc / read / write                 │
+   │    • Bump / Freelist / Slab allocators                       │
+   │    • residency tiers + LRU + compaction                      │
+   │    • generation-checked handle validation                    │
+   └──────────────────────────────────────────────────────────────┘
+                              ↑ also built on
+   ┌──────────────────────────────────────────────────────────────┐
+   │             guest-side TVM (browser / sandboxed)             │
+   │  ┌────────────────────────────────────────┐                  │
+   │  │ tvm-guest-mm                           │                  │
+   │  │   • Self-contained WAT modules          │                  │
+   │  │   • N internal wasm memories (pools)   │                  │
+   │  │   • Generated dispatch helpers          │                  │
+   │  │   • Reuses tvm-core types               │                  │
+   │  │   • NO spill (toolchain has no I/O)    │                  │
+   │  └────────────────────────────────────────┘                  │
+   └──────────────────────────────────────────────────────────────┘
+
+  ┌─────────────────── OPTIONAL LAYERS ABOVE TVM ──────────────────┐
+  │ BackingStore impls (FileBackingStore, S3, etc.)                │
+  │   "spill cold regions to slower-but-larger storage"            │
+  │   ← embedder's policy decision, not TVM's responsibility       │
+  │                                                                │
+  │ Memory pressure controller / multi-tenant scheduler            │
+  │   ← also embedder's responsibility                             │
+  └────────────────────────────────────────────────────────────────┘
 ```
 
 ## Core abstractions
@@ -94,13 +132,28 @@ form.
 ```
 
 - **Hot**: resident, normal access.
-- **Warm**: resident but eligible for spill. Tracked in an LRU.
-- **Cold**: spilled to a `BackingStore`. Reads via `read_or_fault` auto-load;
-  reads via plain `read` return `NotResident`.
-- **External**: future hook for non-local stores. Not implemented.
+- **Warm**: resident but eligible for eviction by an external policy.
+  Tracked in an LRU. The "eligibility" is a hint — TVM provides the LRU
+  + state machine, the embedder decides what to do with it.
+- **Cold**: a region whose bytes have been moved out of TVM's resident
+  storage. *How* and *where* they went is the embedder's concern via
+  the optional `BackingStore` layer. From TVM's perspective, "Cold"
+  just means "the region's bytes aren't currently in our pool — if you
+  want to read it, you (or your `BackingStore` layer) need to bring
+  them back."
+- **External**: reserved for callbacks (`ExternalLoader`) that fetch
+  bytes from non-local sources on demand. Same shape as Cold but with
+  a different recovery mechanism.
 
-`evict_warm_region(&mut backing)` pops the oldest non-pinned Warm region and
-spills it. Designed as the foundation for memory-pressure-driven eviction.
+`evict_warm_region(&mut backing)` is provided **as a convenience** for
+embedders who use `BackingStore`; it pops the oldest non-pinned Warm
+region and spills it. The embedder's pressure-handling policy lives
+above TVM, not inside it.
+
+**`tvm-guest-mm` doesn't use the Cold tier**. Pure-guest deployments
+have no I/O capability, so cold regions can't go anywhere. Regions in
+guest-mm are always Hot or Warm (LRU eligibility for application-level
+policy decisions, not for actual eviction).
 
 ## Allocators
 

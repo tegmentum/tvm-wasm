@@ -31,10 +31,19 @@ cargo test --workspace
 
 | Crate | What it does |
 |---|---|
-| `tvm-core` | Region directory, allocators, residency tiering, handles, metrics |
-| `tvm-wasmtime` | Wasmtime bindings: WIT host impl, raw fast-path linker, multi-store sharing |
-| `tvm-guest-rt` | Guest-side safe Rust API over the raw fast path |
+| `tvm-core` | Region directory, allocators, residency tiering, handles, metrics — shared by both deployment models |
+| `tvm-wasmtime` | **Host-side TVM** for server runtimes: WIT host impl, raw fast-path linker, imported-memory regions, multi-store sharing |
+| `tvm-guest-mm` | **Guest-side TVM**: self-contained wasm modules with N internal memory pools, no host imports needed |
+| `tvm-guest-rt` | Guest-side safe Rust API over the raw fast path (for use with `tvm-wasmtime` host) |
+| `tvm-test-harness` | Reusable benchmarking primitives |
 | `tvm-tests` | Integration tests for `tvm-core` |
+
+**Pick by deployment**: server runtime where you control the wasm host →
+`tvm-wasmtime`. Browser / sandboxed platform / can't extend the host →
+`tvm-guest-mm`. Both give you the core TVM properties (region/handle
+abstraction, multi-pool >4 GiB scaling, lifecycle); they differ on
+whether spill-to-disk and host-side observability are available (only
+the host-side variant offers them).
 
 Plus example guests under `examples/guest-demo/` (WIT path) and
 `examples/guest-fast-path/` (raw path).

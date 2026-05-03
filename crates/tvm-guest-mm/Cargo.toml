@@ -1,0 +1,15 @@
+[package]
+name = "tvm-guest-mm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Guest-side TVM with multi-memory pools. Self-contained WAT — no host imports needed. Scales beyond 4 GiB by composing internal wasm memories."
+
+[dependencies]
+tvm-core = { path = "../tvm-core" }
+wat = { workspace = true }
+
+[dev-dependencies]
+wasmtime = { workspace = true }
+anyhow = { workspace = true }
