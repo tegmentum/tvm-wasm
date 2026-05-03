@@ -261,6 +261,26 @@ impl TvmHost {
     // None of these require a guest-side SIMD sidecar — that pattern
     // turned out to be slower than autovec'd Rust for host execution.
     // The benefit is purely in collapsing the call sequence.
+    //
+    // ## API contract — closed algebraic core
+    //
+    // This module exposes a **closed set of algebraic primitives**: the
+    // monoid reducers (sum, product-equivalents, AND, OR, XOR, max,
+    // min, popcount), counting reducers (count_byte, count_in_range,
+    // popcount), comparisons (eq, lex_cmp), searches (find_byte,
+    // index_of), and the in-place mutator family (fill, xor_*).
+    //
+    // Domain-specific reducers (CRC32, base64, UTF-8 validation,
+    // SHA / xxhash / blake3, JSON parsing) are **out of scope**.
+    // Implement those in caller code by acquiring the slice via
+    // `RegionDirectory::region_slice_at` (or use this trait's
+    // operations for the autovec-friendly parts) and writing the
+    // domain-specific fold inline. The trampoline-collapse benefit
+    // generalizes — any user-defined fold gets the same speedup if
+    // exposed as a single host import.
+    //
+    // The intentional contract: TVM owns the closed algebraic set;
+    // the embedder owns everything else.
     // ------------------------------------------------------------------
 
     /// Sum every byte in the first `len` bytes of `handle`'s region as
@@ -501,6 +521,78 @@ impl TvmHost {
             *b ^= value;
         }
         Ok(())
+    }
+
+    /// Bitwise AND fold across `len` bytes. Identity is `0xff`.
+    /// Returns the AND of every byte; useful for "all bits ever
+    /// cleared" / common-prefix mask analysis.
+    pub fn region_and_fold_u8(
+        &mut self,
+        handle: CoreHandle,
+        len: u32,
+    ) -> Result<u8, CoreError> {
+        let bytes = self.directory.region_slice_at(handle, len)?;
+        Ok(bytes.iter().fold(0xffu8, |a, &b| a & b))
+    }
+
+    /// Bitwise OR fold across `len` bytes. Identity is `0x00`.
+    /// Returns the OR of every byte; useful for "all bits ever set" /
+    /// reachable-bit-mask analysis.
+    pub fn region_or_fold_u8(
+        &mut self,
+        handle: CoreHandle,
+        len: u32,
+    ) -> Result<u8, CoreError> {
+        let bytes = self.directory.region_slice_at(handle, len)?;
+        Ok(bytes.iter().fold(0u8, |a, &b| a | b))
+    }
+
+    /// XOR fold across `len` bytes. Identity is `0x00`. Returns the
+    /// running XOR of every byte; useful for parity checks and
+    /// simple checksums (note: not a hash — collisions are trivial).
+    pub fn region_xor_fold_u8(
+        &mut self,
+        handle: CoreHandle,
+        len: u32,
+    ) -> Result<u8, CoreError> {
+        let bytes = self.directory.region_slice_at(handle, len)?;
+        Ok(bytes.iter().fold(0u8, |a, &b| a ^ b))
+    }
+
+    /// Count bytes whose value falls within `[lo, hi]` (inclusive on
+    /// both ends). Generalizes `count_byte` (which is the `lo == hi`
+    /// case). Predicate-counting completes the monoid family of
+    /// reducers (see also `count_byte`, `popcount`).
+    pub fn region_count_in_range(
+        &mut self,
+        handle: CoreHandle,
+        len: u32,
+        lo: u8,
+        hi: u8,
+    ) -> Result<u32, CoreError> {
+        let bytes = self.directory.region_slice_at(handle, len)?;
+        Ok(bytes.iter().filter(|&&b| b >= lo && b <= hi).count() as u32)
+    }
+
+    /// Lexicographic comparison of `len` bytes between two regions.
+    /// Returns `-1` if `a < b`, `0` if equal, `+1` if `a > b`.
+    /// Generalizes `region_eq` from bool to ordering. Both regions
+    /// must contain at least `len` bytes from their respective
+    /// handle offsets.
+    pub fn region_lex_cmp(
+        &mut self,
+        a: CoreHandle,
+        b: CoreHandle,
+        len: u32,
+    ) -> Result<core::cmp::Ordering, CoreError> {
+        let lhs = self.directory.region_slice_at(a, len)?;
+        let lhs_ptr = lhs.as_ptr();
+        let lhs_len = lhs.len();
+        let rhs = self.directory.region_slice_at(b, len)?;
+        // SAFETY: same justification as region_eq — both borrows are
+        // immutable, taken in sequence on a directory we hold.
+        let lhs = unsafe { core::slice::from_raw_parts(lhs_ptr, lhs_len) };
+        Ok(lhs.cmp(rhs))
     }
 
     /// Find the first occurrence of `needle` within the first `len`

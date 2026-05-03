@@ -499,6 +499,80 @@ where
 
     linker.func_wrap(
         "tvm",
+        "and_fold_u8",
+        // Returns folded byte in low 8 bits; -1 on err.
+        |mut caller: Caller<'_, T>, packed: i64, len: i32| -> i32 {
+            let h = Handle::unpack(packed as u64);
+            let host = caller.data_mut().as_mut();
+            match host.region_and_fold_u8(h, len as u32) {
+                Ok(v) => v as i32,
+                Err(e) => { host.last_raw_error = err_code(&e); -1 }
+            }
+        },
+    )?;
+
+    linker.func_wrap(
+        "tvm",
+        "or_fold_u8",
+        |mut caller: Caller<'_, T>, packed: i64, len: i32| -> i32 {
+            let h = Handle::unpack(packed as u64);
+            let host = caller.data_mut().as_mut();
+            match host.region_or_fold_u8(h, len as u32) {
+                Ok(v) => v as i32,
+                Err(e) => { host.last_raw_error = err_code(&e); -1 }
+            }
+        },
+    )?;
+
+    linker.func_wrap(
+        "tvm",
+        "xor_fold_u8",
+        |mut caller: Caller<'_, T>, packed: i64, len: i32| -> i32 {
+            let h = Handle::unpack(packed as u64);
+            let host = caller.data_mut().as_mut();
+            match host.region_xor_fold_u8(h, len as u32) {
+                Ok(v) => v as i32,
+                Err(e) => { host.last_raw_error = err_code(&e); -1 }
+            }
+        },
+    )?;
+
+    linker.func_wrap(
+        "tvm",
+        "count_in_range",
+        |mut caller: Caller<'_, T>,
+         packed: i64,
+         len: i32,
+         lo: i32,
+         hi: i32| -> i32 {
+            let h = Handle::unpack(packed as u64);
+            let host = caller.data_mut().as_mut();
+            match host.region_count_in_range(h, len as u32, lo as u8, hi as u8) {
+                Ok(c) => c as i32,
+                Err(e) => { host.last_raw_error = err_code(&e); -1 }
+            }
+        },
+    )?;
+
+    linker.func_wrap(
+        "tvm",
+        "lex_cmp",
+        // Returns -1/0/1 for Less/Equal/Greater; -2 on err.
+        |mut caller: Caller<'_, T>, packed_a: i64, packed_b: i64, len: i32| -> i32 {
+            let ha = Handle::unpack(packed_a as u64);
+            let hb = Handle::unpack(packed_b as u64);
+            let host = caller.data_mut().as_mut();
+            match host.region_lex_cmp(ha, hb, len as u32) {
+                Ok(core::cmp::Ordering::Less) => -1,
+                Ok(core::cmp::Ordering::Equal) => 0,
+                Ok(core::cmp::Ordering::Greater) => 1,
+                Err(e) => { host.last_raw_error = err_code(&e); -2 }
+            }
+        },
+    )?;
+
+    linker.func_wrap(
+        "tvm",
         "popcount",
         |mut caller: Caller<'_, T>, packed: i64, len: i32| -> i64 {
             let h = Handle::unpack(packed as u64);
