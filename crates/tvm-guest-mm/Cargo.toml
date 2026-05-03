@@ -13,3 +13,13 @@ wat = { workspace = true }
 [dev-dependencies]
 wasmtime = { workspace = true }
 anyhow = { workspace = true }
+tvm-test-harness = { path = "../tvm-test-harness" }
+tvm-wasmtime = { path = "../tvm-wasmtime" }
+
+[[bench]]
+name = "guest_mm_dispatch"
+harness = false
+
+[[bench]]
+name = "full_matrix"
+harness = false
