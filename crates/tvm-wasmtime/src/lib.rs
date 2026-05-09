@@ -41,6 +41,7 @@
 pub mod bindings;
 pub mod builder;
 pub mod concurrent_host;
+pub mod engine_config;
 pub mod host;
 pub mod imported;
 pub mod linker;
@@ -53,6 +54,9 @@ pub mod runtime_persist;
 pub mod shared_host;
 
 pub use builder::TvmBuilder;
+pub use engine_config::{
+    imported_region_engine_config, pooling_imported_region_engine_config,
+};
 pub use host::TvmHost;
 pub use imported::{
     build_imported_setup, build_imported_setup_with_data, create_imported_in_store,

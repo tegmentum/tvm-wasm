@@ -16,18 +16,18 @@
 //! ## Aggregate size
 //!
 //! 64 regions × 256 MiB capacity = 16 GiB aggregate addressable, well
-//! past the 4 GiB single-memory ceiling. Each region's wasm32 memory
-//! would reserve ~4 GiB of *virtual* address space at default settings
-//! (256 GiB total — fine on macOS/Linux but loud). The test tunes the
-//! engine into dynamic-memory style with zero guards so each memory
-//! mmaps exactly 256 MiB, bringing the virtual footprint down to
-//! ~16 GiB. Committed RSS stays under a few MiB — only the sentinel
-//! pages we touch fault in.
+//! past the 4 GiB single-memory ceiling. The test uses the pooling
+//! allocator (`pooling_imported_region_engine_config`) so memories are
+//! served from a pre-reserved pool sized exactly for the workload —
+//! 64 slots of 256 MiB each — bringing the virtual footprint to
+//! ~16 GiB with zero waste and zero per-memory mmap churn. Committed
+//! RSS stays under a few MiB — only the sentinel pages we touch fault
+//! in.
 
 use std::fmt::Write as _;
 
 use tvm_core::RegionKind;
-use tvm_wasmtime::{create_imported_in_store, TvmHost};
+use tvm_wasmtime::{create_imported_in_store, pooling_imported_region_engine_config, TvmHost};
 use wasmtime::{Engine, Linker, Module, Store};
 
 const N_REGIONS: u16 = 64;
@@ -52,18 +52,10 @@ fn build_wat(n: u16) -> String {
 }
 
 fn make_engine() -> anyhow::Result<Engine> {
-    let mut config = wasmtime::Config::new();
-    config.wasm_multi_memory(true);
-    // Force every memory through dynamic style with zero guards / zero
-    // growth reservation. Each memory mmaps exactly its declared
-    // capacity (256 MiB here), so 64 regions = 16 GiB virtual instead
-    // of 256 GiB at default settings. Bounds checks are emitted
-    // explicitly — fine for this correctness-only test.
-    config.static_memory_maximum_size(0);
-    config.static_memory_guard_size(0);
-    config.dynamic_memory_guard_size(0);
-    config.dynamic_memory_reserved_for_growth(0);
-    Ok(Engine::new(&config)?)
+    Ok(Engine::new(&pooling_imported_region_engine_config(
+        N_REGIONS as u32,
+        REGION_BYTES,
+    ))?)
 }
 
 #[test]

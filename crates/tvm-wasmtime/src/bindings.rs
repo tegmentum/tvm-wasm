@@ -8,5 +8,4 @@
 wasmtime::component::bindgen!({
     path: "../../wit",
     world: "tvm-guest",
-    async: false,
 });

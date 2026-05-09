@@ -114,10 +114,11 @@ impl TvmBuilder {
         Store<TvmHost>,
         wasmtime::component::Linker<TvmHost>,
     )> {
-        let mut config = wasmtime::Config::new();
-        if self.multi_memory {
-            config.wasm_multi_memory(true);
-        }
+        let mut config = if self.multi_memory {
+            crate::engine_config::imported_region_engine_config()
+        } else {
+            wasmtime::Config::new()
+        };
         config.wasm_component_model(true);
         let engine = Engine::new(&config)?;
         let mut host = if let Some(b) = self.custom_backing {
@@ -140,10 +141,11 @@ impl TvmBuilder {
         self,
         component_only: bool,
     ) -> wasmtime::Result<(Engine, Store<TvmHost>, Linker<TvmHost>, bool)> {
-        let mut config = wasmtime::Config::new();
-        if self.multi_memory {
-            config.wasm_multi_memory(true);
-        }
+        let mut config = if self.multi_memory {
+            crate::engine_config::imported_region_engine_config()
+        } else {
+            wasmtime::Config::new()
+        };
         if component_only {
             config.wasm_component_model(true);
         }

@@ -326,9 +326,7 @@ const MM_WAT: &str = r#"
 "#;
 
 fn enable_multi_memory() -> anyhow::Result<Engine> {
-    let mut config = Config::new();
-    config.wasm_multi_memory(true);
-    Engine::new(&config).map_err(Into::into)
+    Engine::new(&tvm_wasmtime::imported_region_engine_config()).map_err(Into::into)
 }
 
 fn run_tvm_mm_sequential(size: u32, data: &[u8]) -> anyhow::Result<Sample> {
@@ -336,10 +334,10 @@ fn run_tvm_mm_sequential(size: u32, data: &[u8]) -> anyhow::Result<Sample> {
     let engine = enable_multi_memory()?;
     let module = Module::new(&engine, MM_WAT)?;
     // Pre-create two memories sized to comfortably hold our test data.
-    let pages_needed = ((size as u64 + 65535) / 65536).max(1);
+    let pages_needed = ((size as u64 + 65535) / 65536).max(1) as u32;
     let mut store = Store::new(&engine, ());
-    let mem0 = Memory::new(&mut store, MemoryType::new(pages_needed as u32, None))?;
-    let mem1 = Memory::new(&mut store, MemoryType::new(1, None))?;
+    let mem0 = Memory::new(&mut store, MemoryType::new(pages_needed, Some(pages_needed)))?;
+    let mem1 = Memory::new(&mut store, MemoryType::new(1, Some(1)))?;
     let mut linker: Linker<()> = Linker::new(&engine);
     linker.define(&mut store, "tvm", "r0", mem0)?;
     linker.define(&mut store, "tvm", "r1", mem1)?;
@@ -363,10 +361,10 @@ fn run_tvm_mm_list(size: u32, bytes: &[u8], head_offset: u32) -> anyhow::Result<
     use wasmtime::{Memory, MemoryType};
     let engine = enable_multi_memory()?;
     let module = Module::new(&engine, MM_WAT)?;
-    let pages_needed = ((size as u64 + 65535) / 65536).max(1);
+    let pages_needed = ((size as u64 + 65535) / 65536).max(1) as u32;
     let mut store = Store::new(&engine, ());
-    let mem0 = Memory::new(&mut store, MemoryType::new(pages_needed as u32, None))?;
-    let mem1 = Memory::new(&mut store, MemoryType::new(1, None))?;
+    let mem0 = Memory::new(&mut store, MemoryType::new(pages_needed, Some(pages_needed)))?;
+    let mem1 = Memory::new(&mut store, MemoryType::new(1, Some(1)))?;
     let mut linker: Linker<()> = Linker::new(&engine);
     linker.define(&mut store, "tvm", "r0", mem0)?;
     linker.define(&mut store, "tvm", "r1", mem1)?;
@@ -396,11 +394,11 @@ fn run_tvm_mm_columnar(
     use wasmtime::{Memory, MemoryType};
     let engine = enable_multi_memory()?;
     let module = Module::new(&engine, MM_WAT)?;
-    let pages_needed = ((size as u64 + 65535) / 65536).max(1);
+    let pages_needed = ((size as u64 + 65535) / 65536).max(1) as u32;
     let mut store = Store::new(&engine, ());
     // Each column gets its own imported memory.
-    let mem_a = Memory::new(&mut store, MemoryType::new(pages_needed as u32, None))?;
-    let mem_b = Memory::new(&mut store, MemoryType::new(pages_needed as u32, None))?;
+    let mem_a = Memory::new(&mut store, MemoryType::new(pages_needed, Some(pages_needed)))?;
+    let mem_b = Memory::new(&mut store, MemoryType::new(pages_needed, Some(pages_needed)))?;
     let mut linker: Linker<()> = Linker::new(&engine);
     linker.define(&mut store, "tvm", "r0", mem_a)?;
     linker.define(&mut store, "tvm", "r1", mem_b)?;

@@ -17,16 +17,17 @@
 //!
 //! ## Runtime cost
 //!
-//! Each wasm32 memory reserves 4 GiB of *virtual* address space at
-//! wasmtime's default static-memory size (the threshold the JIT folds
-//! bounds checks against). Three regions = 12 GiB virtual reservation.
+//! With `imported_region_engine_config` (`memory_may_move(false)`) and
+//! `MemoryType::new(pages, Some(pages))` set in `ImportedRegion::new`,
+//! each memory reserves exactly its declared capacity plus the default
+//! 32 MiB guard. Three 2 GiB regions ≈ 6.1 GiB virtual reservation total.
 //! Touched pages account for under 1 MiB of physical RSS — only the
 //! offsets we actually write fault in.
 
 use std::time::Instant;
 
 use tvm_core::RegionKind;
-use tvm_wasmtime::{create_imported_in_store, TvmHost};
+use tvm_wasmtime::{create_imported_in_store, imported_region_engine_config, TvmHost};
 use wasmtime::{Engine, Linker, Module, Store};
 
 /// 2 GiB per region. Three regions = 6 GiB aggregate, comfortably past
@@ -76,9 +77,7 @@ const PROBE_WAT: &str = r#"
 "#;
 
 fn make_engine() -> anyhow::Result<Engine> {
-    let mut config = wasmtime::Config::new();
-    config.wasm_multi_memory(true);
-    Ok(Engine::new(&config)?)
+    Ok(Engine::new(&imported_region_engine_config())?)
 }
 
 fn wire_imports(

@@ -30,7 +30,7 @@ repository = "https://github.com/tegmentum/tvm-wasm"
 
 [workspace.dependencies]
 thiserror = "1.0"
-wasmtime = { version = "25", features = ["component-model", "cranelift", "runtime"] }
+wasmtime = { version = "44.0.1", features = ["component-model", "cranelift", "runtime"] }
 wat = "1"
-wit-component = "0.217"
+wit-component = "0.240"
 anyhow = "1.0"

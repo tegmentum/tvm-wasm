@@ -63,7 +63,7 @@ fn build_guest_core_wasm() -> anyhow::Result<Vec<u8>> {
 }
 
 fn encode_component(core_wasm: &[u8]) -> anyhow::Result<Vec<u8>> {
-    let encoder = wit_component::ComponentEncoder::default()
+    let mut encoder = wit_component::ComponentEncoder::default()
         .module(core_wasm)?
         .validate(true);
     let bytes = encoder.encode()?;

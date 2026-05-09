@@ -58,8 +58,18 @@ impl ImportedRegion {
     ) -> Result<Self> {
         const PAGE: u64 = 65_536;
         let pages = ((capacity as u64 + PAGE - 1) / PAGE).max(1) as u32;
-        let memory = Memory::new(store.as_context_mut(), MemoryType::new(pages, None))
-            .map_err(|e| TvmError::BackingStore(e.to_string()))?;
+        // Bind max == min: the region's capacity is fixed at creation
+        // time and never grows. Telling wasmtime this lets the JIT fold
+        // bounds checks against a constant, and combined with the
+        // `memory_may_move(false)` engine config it reserves exactly
+        // `pages * 64 KiB` of virtual address space (no wasted 4 GiB
+        // reservation per memory) and hoists the memory base pointer out
+        // of hot loops.
+        let memory = Memory::new(
+            store.as_context_mut(),
+            MemoryType::new(pages, Some(pages)),
+        )
+        .map_err(|e| TvmError::BackingStore(e.to_string()))?;
         Ok(Self {
             meta: Region {
                 id,
@@ -109,7 +119,7 @@ impl ImportedRegion {
     /// Read bytes from the imported memory through the host-mediated
     /// path. Useful for bridge code (serialization, debugging); guests
     /// typically use native loads instead.
-    pub fn read<T>(
+    pub fn read<T: 'static>(
         &self,
         store: &impl AsContext<Data = T>,
         handle: Handle,
@@ -130,7 +140,7 @@ impl ImportedRegion {
             .map_err(|_| TvmError::OutOfBounds)
     }
 
-    pub fn write<T>(
+    pub fn write<T: 'static>(
         &self,
         store: &mut impl AsContextMut<Data = T>,
         handle: Handle,
@@ -209,8 +219,7 @@ pub fn build_imported_setup_with_data(
     wasmtime::Linker<crate::TvmHost>,
     Vec<tvm_core::Handle>,
 )> {
-    let mut config = wasmtime::Config::new();
-    config.wasm_multi_memory(true);
+    let config = crate::engine_config::imported_region_engine_config();
     let engine = wasmtime::Engine::new(&config)?;
     let host = crate::TvmHost::new();
     let mut store = wasmtime::Store::new(&engine, host);
@@ -256,8 +265,7 @@ pub fn build_imported_setup(
     region_capacity: u32,
     kind: tvm_core::RegionKind,
 ) -> wasmtime::Result<(wasmtime::Engine, wasmtime::Store<crate::TvmHost>, wasmtime::Linker<crate::TvmHost>, Vec<u16>)> {
-    let mut config = wasmtime::Config::new();
-    config.wasm_multi_memory(true);
+    let config = crate::engine_config::imported_region_engine_config();
     let engine = wasmtime::Engine::new(&config)?;
     let host = crate::TvmHost::new();
     let mut store = wasmtime::Store::new(&engine, host);
