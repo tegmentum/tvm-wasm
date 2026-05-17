@@ -84,3 +84,66 @@ fn raw_shared_cross_store_region_visibility() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+// Wider-surface parity: the reducer suite + memory-touching ops also work
+// through `add_raw_shared` (lock-per-call; uncached for memory). One pure
+// reducer (`sum_u8`) and one uncached-memory op (`byte_histogram`) cover
+// the two genuinely-new mechanisms; the other 19 pure ops share the
+// byte-identical `&mut *g` transform.
+const GW: &str = r#"
+(module
+  (import "tvm" "alloc"          (func $alloc (param i32 i32) (result i64)))
+  (import "tvm" "write"          (func $write (param i64 i32 i32) (result i32)))
+  (import "tvm" "sum_u8"         (func $sum   (param i64 i32) (result i64)))
+  (import "tvm" "byte_histogram" (func $hist  (param i64 i32 i32) (result i32)))
+  (memory (export "memory") 2)
+  ;; fill [0,n) with i&0xff, alloc+write, return packed handle
+  (func (export "prep") (param $region i32) (param $n i32) (result i64)
+    (local $i i32) (local $h i64)
+    (block $b (loop $l (br_if $b (i32.eq (local.get $i) (local.get $n)))
+      (i32.store8 (local.get $i) (i32.and (local.get $i) (i32.const 0xff)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $l)))
+    (local.set $h (call $alloc (local.get $region) (local.get $n)))
+    (drop (call $write (local.get $h) (i32.const 0) (local.get $n)))
+    (local.get $h))
+  (func (export "sum") (param $h i64) (param $n i32) (result i64)
+    (call $sum (local.get $h) (local.get $n)))
+  ;; histogram 1024 bytes (256 u32 LE) at offset 65536; return count of $b
+  (func (export "hist_count") (param $h i64) (param $n i32) (param $b i32) (result i32)
+    (drop (call $hist (local.get $h) (local.get $n) (i32.const 65536)))
+    (i32.load (i32.add (i32.const 65536) (i32.mul (local.get $b) (i32.const 4))))))
+"#;
+
+#[test]
+fn raw_shared_wider_surface_parity() -> anyhow::Result<()> {
+    let engine = Engine::default();
+    let shared = SharedTvmHost::new();
+    let region = {
+        let mut g = shared.lock();
+        ManagerHost::create_region(&mut *g, RegionKind::HotHeap, 4096)?
+    };
+    let module = Module::new(&engine, GW)?;
+    let mut linker: Linker<SharedTvmHost> = Linker::new(&engine);
+    add_raw_shared(&mut linker)?;
+    let mut s = Store::new(&engine, shared.clone());
+    let i = linker.instantiate(&mut s, &module)?;
+
+    let n: i32 = 256; // bytes 0..=255 each once
+    let h = i
+        .get_typed_func::<(i32, i32), i64>(&mut s, "prep")?
+        .call(&mut s, (region as i32, n))?;
+    assert_ne!(h, 0, "prep alloc/write");
+
+    // sum_u8 over 0..=255 = 32640 — pure reducer through the shared path.
+    let sum = i
+        .get_typed_func::<(i64, i32), i64>(&mut s, "sum")?
+        .call(&mut s, (h, n))?;
+    assert_eq!(sum, (0..256).sum::<i64>(), "sum_u8 (pure, lock-per-call)");
+
+    // byte_histogram: each byte value 0..=255 occurs exactly once — the
+    // uncached-memory write path.
+    let hc = i.get_typed_func::<(i64, i32, i32), i32>(&mut s, "hist_count")?;
+    assert_eq!(hc.call(&mut s, (h, n, 0x42))?, 1, "histogram[0x42]");
+    assert_eq!(hc.call(&mut s, (h, n, 0xFE))?, 1, "histogram[0xFE]");
+    Ok(())
+}
