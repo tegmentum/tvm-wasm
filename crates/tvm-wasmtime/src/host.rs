@@ -18,11 +18,10 @@ impl CachedGuestMemory {
 }
 
 use tvm_core::{
-    AllocatorKind, BackingStore, DynBackingStore, FileBackingStore,
-    Handle as CoreHandle, Region as CoreRegion, RegionDirectory,
-    RegionKind as CoreRegionKind, ResolveCache, ResolveHit,
-    Residency as CoreResidency, TvmError as CoreError, TvmFacade, TvmSpill,
-    VecBackedRegion,
+    AllocatorKind, BackingStore, DynBackingStore, FileBackingStore, Handle as CoreHandle,
+    Region as CoreRegion, RegionDirectory, RegionKind as CoreRegionKind,
+    Residency as CoreResidency, ResolveCache, ResolveHit, TvmError as CoreError, TvmFacade,
+    TvmSpill, VecBackedRegion,
 };
 
 /// Size-specialized memcpy. Hot path of `fast_read` / `fast_write`. Inline
@@ -38,22 +37,10 @@ unsafe fn copy_specialized(src: *const u8, dst: *mut u8, len: usize) {
     unsafe {
         match len {
             1 => *dst = *src,
-            2 => ptr::write_unaligned(
-                dst as *mut u16,
-                ptr::read_unaligned(src as *const u16),
-            ),
-            4 => ptr::write_unaligned(
-                dst as *mut u32,
-                ptr::read_unaligned(src as *const u32),
-            ),
-            8 => ptr::write_unaligned(
-                dst as *mut u64,
-                ptr::read_unaligned(src as *const u64),
-            ),
-            16 => ptr::write_unaligned(
-                dst as *mut u128,
-                ptr::read_unaligned(src as *const u128),
-            ),
+            2 => ptr::write_unaligned(dst as *mut u16, ptr::read_unaligned(src as *const u16)),
+            4 => ptr::write_unaligned(dst as *mut u32, ptr::read_unaligned(src as *const u32)),
+            8 => ptr::write_unaligned(dst as *mut u64, ptr::read_unaligned(src as *const u64)),
+            16 => ptr::write_unaligned(dst as *mut u128, ptr::read_unaligned(src as *const u128)),
             32 => {
                 let v0 = ptr::read_unaligned(src as *const u128);
                 let v1 = ptr::read_unaligned((src as *const u128).add(1));
@@ -79,8 +66,8 @@ use crate::bindings::tvm::memory::bytes::Host as BytesHost;
 use crate::bindings::tvm::memory::diagnostics::Host as DiagnosticsHost;
 use crate::bindings::tvm::memory::manager::Host as ManagerHost;
 use crate::bindings::tvm::memory::types::{
-    CompactResult, Handle, Host as TypesHost, RegionInfo, RegionKind, RegionMetrics,
-    Residency, TvmError,
+    CompactResult, Handle, Host as TypesHost, RegionInfo, RegionKind, RegionMetrics, Residency,
+    TvmError,
 };
 
 /// Host-side TVM. The directory + cache + (optional) backing store
@@ -185,18 +172,10 @@ impl TvmHost {
     /// Create a new region with default allocator + policy. Returns the
     /// region id. Equivalent to calling `manager::create-region` over the
     /// WIT path but without needing the `ManagerHost` trait import.
-    pub fn create_region(
-        &mut self,
-        kind: CoreRegionKind,
-        capacity: u32,
-    ) -> Result<u16, CoreError> {
+    pub fn create_region(&mut self, kind: CoreRegionKind, capacity: u32) -> Result<u16, CoreError> {
         let allocator = self.default_allocator;
-        self.directory.create_region_with(
-            kind,
-            capacity,
-            allocator,
-            VecBackedRegion::new(capacity),
-        )
+        self.directory
+            .create_region_with(kind, capacity, allocator, VecBackedRegion::new(capacity))
     }
 
     /// Allocate inside an existing region. Same as the WIT `manager.alloc`
@@ -222,12 +201,10 @@ impl TvmHost {
     /// Read bytes into the supplied buffer. Ergonomic wrapper around the
     /// directory's read; uses the auto-fault path if a backing store is
     /// configured, strict mode otherwise.
-    pub fn read_bytes(
-        &mut self,
-        handle: CoreHandle,
-        buf: &mut [u8],
-    ) -> Result<(), CoreError> {
-        let TvmHost { directory, backing, .. } = self;
+    pub fn read_bytes(&mut self, handle: CoreHandle, buf: &mut [u8]) -> Result<(), CoreError> {
+        let TvmHost {
+            directory, backing, ..
+        } = self;
         match backing.as_mut() {
             Some(b) => directory.read_or_fault(handle, buf, b),
             None => directory.read(handle, buf),
@@ -235,12 +212,10 @@ impl TvmHost {
     }
 
     /// Write bytes. Symmetric to `read_bytes`.
-    pub fn write_bytes(
-        &mut self,
-        handle: CoreHandle,
-        data: &[u8],
-    ) -> Result<(), CoreError> {
-        let TvmHost { directory, backing, .. } = self;
+    pub fn write_bytes(&mut self, handle: CoreHandle, data: &[u8]) -> Result<(), CoreError> {
+        let TvmHost {
+            directory, backing, ..
+        } = self;
         match backing.as_mut() {
             Some(b) => directory.write_or_fault(handle, data, b),
             None => directory.write(handle, data),
@@ -287,11 +262,7 @@ impl TvmHost {
     /// a u64 (no overflow possible — max value is len × 255). Returns
     /// `OutOfBounds` if `len` exceeds the region's capacity from
     /// `handle.offset`.
-    pub fn region_sum_u8(
-        &mut self,
-        handle: CoreHandle,
-        len: u32,
-    ) -> Result<u64, CoreError> {
+    pub fn region_sum_u8(&mut self, handle: CoreHandle, len: u32) -> Result<u64, CoreError> {
         let bytes = self.directory.region_slice_at(handle, len)?;
         Ok(bytes.iter().map(|&b| b as u64).sum())
     }
@@ -306,10 +277,7 @@ impl TvmHost {
         byte: u8,
     ) -> Result<Option<u32>, CoreError> {
         let bytes = self.directory.region_slice_at(handle, len)?;
-        Ok(bytes
-            .iter()
-            .position(|&b| b == byte)
-            .map(|p| p as u32))
+        Ok(bytes.iter().position(|&b| b == byte).map(|p| p as u32))
     }
 
     /// FNV-1a hash of `len` bytes. 64-bit variant. Cheap, decent
@@ -321,11 +289,7 @@ impl TvmHost {
     /// 64-bit multiplier latency (~3 ns/byte on modern x86). Use a
     /// SIMD-friendly hash (xxhash, blake3) over `region_slice_at` if
     /// you need bandwidth.
-    pub fn region_hash_fnv1a(
-        &mut self,
-        handle: CoreHandle,
-        len: u32,
-    ) -> Result<u64, CoreError> {
+    pub fn region_hash_fnv1a(&mut self, handle: CoreHandle, len: u32) -> Result<u64, CoreError> {
         let bytes = self.directory.region_slice_at(handle, len)?;
         let mut h: u64 = 0xcbf29ce484222325;
         for &b in bytes {
@@ -350,12 +314,7 @@ impl TvmHost {
     /// Compare `len` bytes from two regions. Returns `true` iff every
     /// byte matches; uses `<[u8]>::eq` which short-circuits on first
     /// mismatch and autovec's the equal-prefix portion.
-    pub fn region_eq(
-        &mut self,
-        a: CoreHandle,
-        b: CoreHandle,
-        len: u32,
-    ) -> Result<bool, CoreError> {
+    pub fn region_eq(&mut self, a: CoreHandle, b: CoreHandle, len: u32) -> Result<bool, CoreError> {
         // Two slice borrows from the same directory require a small
         // dance: validate first into a fresh borrow, then the second.
         // Both immutable, no aliasing problem if the regions differ.
@@ -383,8 +342,12 @@ impl TvmHost {
         let mut lo: u8 = 255;
         let mut hi: u8 = 0;
         for &b in bytes {
-            if b < lo { lo = b; }
-            if b > hi { hi = b; }
+            if b < lo {
+                lo = b;
+            }
+            if b > hi {
+                hi = b;
+            }
         }
         Ok((lo, hi))
     }
@@ -416,9 +379,7 @@ impl TvmHost {
         // above), so the immutable src borrow doesn't alias dst.
         // VecBackedRegion stores each region in its own Vec<u8>, so
         // distinct ids guarantee distinct allocations.
-        let src_slice = unsafe {
-            core::slice::from_raw_parts(src_ptr, src_len_actual)
-        };
+        let src_slice = unsafe { core::slice::from_raw_parts(src_ptr, src_len_actual) };
         for (d, s) in dst_slice.iter_mut().zip(src_slice.iter()) {
             *d ^= *s;
         }
@@ -450,12 +411,10 @@ impl TvmHost {
     /// Sum of `len/4` little-endian u32 lanes, returned as u128 to
     /// avoid overflow for full-region sums (max value =
     /// 2^32 × 2^30 / 4 = 2^60). `len` must be a multiple of 4.
-    pub fn region_sum_u32_le(
-        &mut self,
-        handle: CoreHandle,
-        len: u32,
-    ) -> Result<u128, CoreError> {
-        if len % 4 != 0 { return Err(CoreError::OutOfBounds); }
+    pub fn region_sum_u32_le(&mut self, handle: CoreHandle, len: u32) -> Result<u128, CoreError> {
+        if len % 4 != 0 {
+            return Err(CoreError::OutOfBounds);
+        }
         let bytes = self.directory.region_slice_at(handle, len)?;
         // Manual chunk decode keeps us autovec-friendly without
         // requiring the slice to be 4-byte aligned.
@@ -472,7 +431,9 @@ impl TvmHost {
         handle: CoreHandle,
         len: u32,
     ) -> Result<Option<u32>, CoreError> {
-        if len % 4 != 0 { return Err(CoreError::OutOfBounds); }
+        if len % 4 != 0 {
+            return Err(CoreError::OutOfBounds);
+        }
         let bytes = self.directory.region_slice_at(handle, len)?;
         Ok(bytes
             .chunks_exact(4)
@@ -483,11 +444,7 @@ impl TvmHost {
     /// Total set bits across `len` bytes. Plain `u8::count_ones` per
     /// byte; rustc autovec's via vectorized popcount on x86_64 +SSE4
     /// and aarch64 +neon. Throughput ~16 GiB/s on modern hardware.
-    pub fn region_popcount(
-        &mut self,
-        handle: CoreHandle,
-        len: u32,
-    ) -> Result<u64, CoreError> {
+    pub fn region_popcount(&mut self, handle: CoreHandle, len: u32) -> Result<u64, CoreError> {
         let bytes = self.directory.region_slice_at(handle, len)?;
         Ok(bytes.iter().map(|&b| b.count_ones() as u64).sum())
     }
@@ -526,11 +483,7 @@ impl TvmHost {
     /// Bitwise AND fold across `len` bytes. Identity is `0xff`.
     /// Returns the AND of every byte; useful for "all bits ever
     /// cleared" / common-prefix mask analysis.
-    pub fn region_and_fold_u8(
-        &mut self,
-        handle: CoreHandle,
-        len: u32,
-    ) -> Result<u8, CoreError> {
+    pub fn region_and_fold_u8(&mut self, handle: CoreHandle, len: u32) -> Result<u8, CoreError> {
         let bytes = self.directory.region_slice_at(handle, len)?;
         Ok(bytes.iter().fold(0xffu8, |a, &b| a & b))
     }
@@ -538,11 +491,7 @@ impl TvmHost {
     /// Bitwise OR fold across `len` bytes. Identity is `0x00`.
     /// Returns the OR of every byte; useful for "all bits ever set" /
     /// reachable-bit-mask analysis.
-    pub fn region_or_fold_u8(
-        &mut self,
-        handle: CoreHandle,
-        len: u32,
-    ) -> Result<u8, CoreError> {
+    pub fn region_or_fold_u8(&mut self, handle: CoreHandle, len: u32) -> Result<u8, CoreError> {
         let bytes = self.directory.region_slice_at(handle, len)?;
         Ok(bytes.iter().fold(0u8, |a, &b| a | b))
     }
@@ -550,11 +499,7 @@ impl TvmHost {
     /// XOR fold across `len` bytes. Identity is `0x00`. Returns the
     /// running XOR of every byte; useful for parity checks and
     /// simple checksums (note: not a hash — collisions are trivial).
-    pub fn region_xor_fold_u8(
-        &mut self,
-        handle: CoreHandle,
-        len: u32,
-    ) -> Result<u8, CoreError> {
+    pub fn region_xor_fold_u8(&mut self, handle: CoreHandle, len: u32) -> Result<u8, CoreError> {
         let bytes = self.directory.region_slice_at(handle, len)?;
         Ok(bytes.iter().fold(0u8, |a, &b| a ^ b))
     }
@@ -771,10 +716,7 @@ impl TvmHost {
         r.alloc(size)
     }
 
-    pub fn imported_dealloc(
-        &mut self,
-        handle: tvm_core::Handle,
-    ) -> Result<(), CoreError> {
+    pub fn imported_dealloc(&mut self, handle: tvm_core::Handle) -> Result<(), CoreError> {
         let r = self
             .imported_region_mut(handle.region_id)
             .ok_or(CoreError::RegionNotFound(handle.region_id))?;
@@ -811,11 +753,7 @@ impl AsMut<TvmHost> for TvmHost {
 // imports stay on the concrete type.
 
 impl TvmFacade for TvmHost {
-    fn create_region(
-        &mut self,
-        kind: CoreRegionKind,
-        capacity: u32,
-    ) -> tvm_core::Result<u16> {
+    fn create_region(&mut self, kind: CoreRegionKind, capacity: u32) -> tvm_core::Result<u16> {
         TvmHost::create_region(self, kind, capacity)
     }
     fn alloc(&mut self, region: u16, size: u32) -> tvm_core::Result<CoreHandle> {
@@ -843,17 +781,21 @@ impl TvmFacade for TvmHost {
 
 impl TvmSpill for TvmHost {
     fn spill(&mut self, region: u16) -> tvm_core::Result<()> {
-        let TvmHost { directory, backing, .. } = self;
-        let backing = backing.as_mut().ok_or_else(|| {
-            CoreError::BackingStore("no backing store configured".into())
-        })?;
+        let TvmHost {
+            directory, backing, ..
+        } = self;
+        let backing = backing
+            .as_mut()
+            .ok_or_else(|| CoreError::BackingStore("no backing store configured".into()))?;
         directory.spill_region(region, backing)
     }
     fn load(&mut self, region: u16) -> tvm_core::Result<()> {
-        let TvmHost { directory, backing, .. } = self;
-        let backing = backing.as_mut().ok_or_else(|| {
-            CoreError::BackingStore("no backing store configured".into())
-        })?;
+        let TvmHost {
+            directory, backing, ..
+        } = self;
+        let backing = backing
+            .as_mut()
+            .ok_or_else(|| CoreError::BackingStore("no backing store configured".into()))?;
         directory.load_region(region, backing)
     }
 }
@@ -861,11 +803,7 @@ impl TvmSpill for TvmHost {
 impl TypesHost for TvmHost {}
 
 impl ManagerHost for TvmHost {
-    fn create_region(
-        &mut self,
-        kind: RegionKind,
-        capacity: u32,
-    ) -> Result<u16, TvmError> {
+    fn create_region(&mut self, kind: RegionKind, capacity: u32) -> Result<u16, TvmError> {
         let core_kind = to_core_kind(kind);
         self.directory
             .create_region_with(
@@ -890,7 +828,9 @@ impl ManagerHost for TvmHost {
     }
 
     fn dealloc(&mut self, ptr: Handle) -> Result<(), TvmError> {
-        self.directory.dealloc(to_core_handle(ptr)).map_err(to_wit_err)
+        self.directory
+            .dealloc(to_core_handle(ptr))
+            .map_err(to_wit_err)
     }
 
     fn describe_region(&mut self, region_id: u16) -> Result<RegionInfo, TvmError> {
@@ -909,20 +849,28 @@ impl ManagerHost for TvmHost {
 
     fn promote_region(&mut self, region_id: u16) -> Result<(), TvmError> {
         self.cache.invalidate(region_id);
-        let TvmHost { directory, backing, .. } = self;
-        let backing = backing.as_mut().ok_or_else(|| {
-            TvmError::BackingStore("no backing store configured".into())
-        })?;
-        directory.promote_region(region_id, backing).map_err(to_wit_err)
+        let TvmHost {
+            directory, backing, ..
+        } = self;
+        let backing = backing
+            .as_mut()
+            .ok_or_else(|| TvmError::BackingStore("no backing store configured".into()))?;
+        directory
+            .promote_region(region_id, backing)
+            .map_err(to_wit_err)
     }
 
     fn demote_region(&mut self, region_id: u16) -> Result<(), TvmError> {
         self.cache.invalidate(region_id);
-        let TvmHost { directory, backing, .. } = self;
-        let backing = backing.as_mut().ok_or_else(|| {
-            TvmError::BackingStore("no backing store configured".into())
-        })?;
-        directory.demote_region(region_id, backing).map_err(to_wit_err)
+        let TvmHost {
+            directory, backing, ..
+        } = self;
+        let backing = backing
+            .as_mut()
+            .ok_or_else(|| TvmError::BackingStore("no backing store configured".into()))?;
+        directory
+            .demote_region(region_id, backing)
+            .map_err(to_wit_err)
     }
 
     fn pin(&mut self, region_id: u16) -> Result<(), TvmError> {
@@ -939,7 +887,9 @@ impl ManagerHost for TvmHost {
             .backing
             .as_mut()
             .ok_or_else(|| TvmError::BackingStore("no backing store configured".into()))?;
-        self.directory.spill_region(region_id, backing).map_err(to_wit_err)
+        self.directory
+            .spill_region(region_id, backing)
+            .map_err(to_wit_err)
     }
 
     fn load_region(&mut self, region_id: u16) -> Result<(), TvmError> {
@@ -948,12 +898,17 @@ impl ManagerHost for TvmHost {
             .backing
             .as_mut()
             .ok_or_else(|| TvmError::BackingStore("no backing store configured".into()))?;
-        self.directory.load_region(region_id, backing).map_err(to_wit_err)
+        self.directory
+            .load_region(region_id, backing)
+            .map_err(to_wit_err)
     }
 
     fn compact_region(&mut self, region_id: u16) -> Result<CompactResult, TvmError> {
         self.cache.invalidate(region_id);
-        let remap = self.directory.compact_region(region_id).map_err(to_wit_err)?;
+        let remap = self
+            .directory
+            .compact_region(region_id)
+            .map_err(to_wit_err)?;
         let mut mapping: Vec<(u32, u32)> = remap.mapping.into_iter().collect();
         mapping.sort_by_key(|p| p.0);
         Ok(CompactResult {
@@ -968,7 +923,9 @@ impl BytesHost for TvmHost {
     fn read(&mut self, ptr: Handle, len: u32) -> Result<Vec<u8>, TvmError> {
         let mut buf = vec![0u8; len as usize];
         let h = to_core_handle(ptr);
-        let TvmHost { directory, backing, .. } = self;
+        let TvmHost {
+            directory, backing, ..
+        } = self;
         let result = match backing.as_mut() {
             Some(b) => directory.read_or_fault(h, &mut buf, b),
             None => directory.read(h, &mut buf),
@@ -979,7 +936,9 @@ impl BytesHost for TvmHost {
 
     fn write(&mut self, ptr: Handle, data: Vec<u8>) -> Result<(), TvmError> {
         let h = to_core_handle(ptr);
-        let TvmHost { directory, backing, .. } = self;
+        let TvmHost {
+            directory, backing, ..
+        } = self;
         let result = match backing.as_mut() {
             Some(b) => directory.write_or_fault(h, &data, b),
             None => directory.write(h, &data),
@@ -989,8 +948,12 @@ impl BytesHost for TvmHost {
 
     fn copy(&mut self, src: Handle, dst: Handle, len: u32) -> Result<(), TvmError> {
         let mut buf = vec![0u8; len as usize];
-        self.directory.read(to_core_handle(src), &mut buf).map_err(to_wit_err)?;
-        self.directory.write(to_core_handle(dst), &buf).map_err(to_wit_err)
+        self.directory
+            .read(to_core_handle(src), &mut buf)
+            .map_err(to_wit_err)?;
+        self.directory
+            .write(to_core_handle(dst), &buf)
+            .map_err(to_wit_err)
     }
 
     fn read_into(
@@ -1126,11 +1089,19 @@ fn from_core_residency(r: CoreResidency) -> Residency {
 }
 
 fn to_core_handle(h: Handle) -> CoreHandle {
-    CoreHandle { region_id: h.region_id, generation: h.generation, offset: h.offset }
+    CoreHandle {
+        region_id: h.region_id,
+        generation: h.generation,
+        offset: h.offset,
+    }
 }
 
 fn to_wit_handle(h: CoreHandle) -> Handle {
-    Handle { region_id: h.region_id, generation: h.generation, offset: h.offset }
+    Handle {
+        region_id: h.region_id,
+        generation: h.generation,
+        offset: h.offset,
+    }
 }
 
 fn to_wit_err(e: CoreError) -> TvmError {
@@ -1145,8 +1116,6 @@ fn to_wit_err(e: CoreError) -> TvmError {
         CoreError::UnsupportedAllocator => {
             TvmError::BackingStore("unsupported by allocator".into())
         }
-        CoreError::PolicyViolation => {
-            TvmError::BackingStore("forbidden by region policy".into())
-        }
+        CoreError::PolicyViolation => TvmError::BackingStore("forbidden by region policy".into()),
     }
 }

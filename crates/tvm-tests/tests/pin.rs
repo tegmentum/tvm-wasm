@@ -28,7 +28,10 @@ fn pinned_region_cannot_be_spilled() {
         )
         .unwrap();
     dir.pin(r).unwrap();
-    assert!(matches!(dir.spill_region(r, &mut backing), Err(TvmError::Pinned)));
+    assert!(matches!(
+        dir.spill_region(r, &mut backing),
+        Err(TvmError::Pinned)
+    ));
 }
 
 #[test]

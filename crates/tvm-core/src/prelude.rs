@@ -8,6 +8,6 @@ pub use crate::error::{
 };
 pub use crate::facade::{TvmFacade, TvmSpill};
 pub use crate::handle::Handle;
+pub use crate::policy::PlacementPolicy;
 pub use crate::region::{Region, RegionKind};
 pub use crate::residency::Residency;
-pub use crate::policy::PlacementPolicy;

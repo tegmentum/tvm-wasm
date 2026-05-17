@@ -124,7 +124,11 @@ fn bench_resolve_cache(c: &mut Criterion) {
 // Avoid unused import warning if Handle is only used in some paths.
 #[allow(dead_code)]
 fn _use_handle() -> Handle {
-    Handle { region_id: 0, generation: 0, offset: 0 }
+    Handle {
+        region_id: 0,
+        generation: 0,
+        offset: 0,
+    }
 }
 
 criterion_group!(benches, bench_read, bench_copy_region, bench_resolve_cache);

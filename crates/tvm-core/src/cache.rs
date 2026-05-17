@@ -115,7 +115,11 @@ impl ResolveCache {
             data_ptr: 0,
             data_len: 0,
         };
-        ResolveHit { generation: region.generation, capacity: region.capacity, resident }
+        ResolveHit {
+            generation: region.generation,
+            capacity: region.capacity,
+            resident,
+        }
     }
 
     /// Install with raw data pointer. The caller is responsible for

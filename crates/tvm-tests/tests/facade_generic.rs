@@ -6,10 +6,7 @@ use tvm_core::prelude::*;
 
 /// A library function written against the generic facade. Allocates a
 /// region, writes a payload, reads it back, returns the SUM of bytes.
-fn library_workload<T: TvmFacade>(
-    tvm: &mut T,
-    payload: &[u8],
-) -> Result<u32> {
+fn library_workload<T: TvmFacade>(tvm: &mut T, payload: &[u8]) -> Result<u32> {
     let region = tvm.create_region(RegionKind::HotHeap, payload.len() as u32 * 2)?;
     let handle = tvm.alloc(region, payload.len() as u32)?;
     tvm.write(handle, payload)?;
@@ -50,7 +47,10 @@ fn library_workload_against_guest_tvm() {
     fn stub_intra_pool_copy(pool: u32, dst_off: u32, src_off: u32, len: u32) -> Result<()> {
         let mut pools = STUB.lock().unwrap();
         let p = &mut pools[pool as usize];
-        p.copy_within(src_off as usize..src_off as usize + len as usize, dst_off as usize);
+        p.copy_within(
+            src_off as usize..src_off as usize + len as usize,
+            dst_off as usize,
+        );
         Ok(())
     }
 
@@ -94,15 +94,22 @@ fn lifecycle_workload_against_both() {
 
     // Guest-side variant — same code path.
     use tvm_guest_mm::{FnDispatch, GuestTvm, Pool};
-    fn noop_read(_p: u32, _o: u32, _dst: &mut [u8]) -> Result<()> { Ok(()) }
-    fn noop_write(_p: u32, _o: u32, _src: &[u8]) -> Result<()> { Ok(()) }
-    fn noop_copy(_p: u32, _d: u32, _s: u32, _l: u32) -> Result<()> { Ok(()) }
+    fn noop_read(_p: u32, _o: u32, _dst: &mut [u8]) -> Result<()> {
+        Ok(())
+    }
+    fn noop_write(_p: u32, _o: u32, _src: &[u8]) -> Result<()> {
+        Ok(())
+    }
+    fn noop_copy(_p: u32, _d: u32, _s: u32, _l: u32) -> Result<()> {
+        Ok(())
+    }
     let pools: Vec<Pool> = (0..2)
-        .map(|i| Pool { memory_index: i, used: 0, capacity: 4096 })
+        .map(|i| Pool {
+            memory_index: i,
+            used: 0,
+            capacity: 4096,
+        })
         .collect();
-    let mut guest = GuestTvm::new(
-        pools,
-        FnDispatch::new(noop_read, noop_write, noop_copy),
-    );
+    let mut guest = GuestTvm::new(pools, FnDispatch::new(noop_read, noop_write, noop_copy));
     lifecycle_workload(&mut guest).unwrap();
 }

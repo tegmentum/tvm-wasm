@@ -30,8 +30,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use tvm_core::{
-    AllocatorKind, Handle, PlacementPolicy, Region, RegionAllocator, RegionKind,
-    Residency, Result, TvmError,
+    AllocatorKind, Handle, PlacementPolicy, Region, RegionAllocator, RegionKind, Residency, Result,
+    TvmError,
 };
 use wasmtime::{AsContext, AsContextMut, Memory, MemoryType, StoreContextMut};
 
@@ -65,11 +65,8 @@ impl ImportedRegion {
         // `pages * 64 KiB` of virtual address space (no wasted 4 GiB
         // reservation per memory) and hoists the memory base pointer out
         // of hot loops.
-        let memory = Memory::new(
-            store.as_context_mut(),
-            MemoryType::new(pages, Some(pages)),
-        )
-        .map_err(|e| TvmError::BackingStore(e.to_string()))?;
+        let memory = Memory::new(store.as_context_mut(), MemoryType::new(pages, Some(pages)))
+            .map_err(|e| TvmError::BackingStore(e.to_string()))?;
         Ok(Self {
             meta: Region {
                 id,
@@ -96,7 +93,8 @@ impl ImportedRegion {
         let offset = self.allocator.alloc(size, 1)?;
         self.meta.used = self.allocator.used();
         self.allocations.fetch_add(1, Ordering::Relaxed);
-        self.bytes_allocated.fetch_add(size as u64, Ordering::Relaxed);
+        self.bytes_allocated
+            .fetch_add(size as u64, Ordering::Relaxed);
         Ok(Handle {
             region_id: self.meta.id,
             generation: self.meta.generation,
@@ -228,7 +226,9 @@ pub fn build_imported_setup_with_data(
     for payload in payloads {
         let cap = (payload.len() as u32).saturating_add(extra_capacity);
         let region_id = create_imported_in_store(&mut store, kind, cap)?;
-        let handle = store.data_mut().imported_alloc(region_id, payload.len() as u32)?;
+        let handle = store
+            .data_mut()
+            .imported_alloc(region_id, payload.len() as u32)?;
         let memory = store
             .data()
             .imported_region(region_id)
@@ -264,7 +264,12 @@ pub fn build_imported_setup(
     n_regions: u32,
     region_capacity: u32,
     kind: tvm_core::RegionKind,
-) -> wasmtime::Result<(wasmtime::Engine, wasmtime::Store<crate::TvmHost>, wasmtime::Linker<crate::TvmHost>, Vec<u16>)> {
+) -> wasmtime::Result<(
+    wasmtime::Engine,
+    wasmtime::Store<crate::TvmHost>,
+    wasmtime::Linker<crate::TvmHost>,
+    Vec<u16>,
+)> {
     let config = crate::engine_config::imported_region_engine_config();
     let engine = wasmtime::Engine::new(&config)?;
     let host = crate::TvmHost::new();

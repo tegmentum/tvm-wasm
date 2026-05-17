@@ -58,10 +58,7 @@ pub fn imported_region_engine_config() -> Config {
 /// `total_core_instances`, `total_tables`, and `total_stacks` get a small
 /// multiplier so a store can hold one instance plus the imported
 /// memories.
-pub fn pooling_imported_region_engine_config(
-    n_regions: u32,
-    region_bytes: u32,
-) -> Config {
+pub fn pooling_imported_region_engine_config(n_regions: u32, region_bytes: u32) -> Config {
     use wasmtime::{InstanceAllocationStrategy, PoolingAllocationConfig};
 
     const PAGE: u32 = 65_536;

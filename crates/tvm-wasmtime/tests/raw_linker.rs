@@ -62,12 +62,9 @@ fn raw_alloc_write_read_round_trip() -> anyhow::Result<()> {
 
     let (mut store, instance) = instantiate(host)?;
 
-    let alloc = instance
-        .get_typed_func::<(i32, i32), i64>(&mut store, "alloc")?;
-    let write = instance
-        .get_typed_func::<(i64, i32, i32), i32>(&mut store, "write")?;
-    let read = instance
-        .get_typed_func::<(i64, i32, i32), i32>(&mut store, "read")?;
+    let alloc = instance.get_typed_func::<(i32, i32), i64>(&mut store, "alloc")?;
+    let write = instance.get_typed_func::<(i64, i32, i32), i32>(&mut store, "write")?;
+    let read = instance.get_typed_func::<(i64, i32, i32), i32>(&mut store, "read")?;
     let sum = instance.get_typed_func::<i32, i32>(&mut store, "sum")?;
 
     let handle = alloc.call(&mut store, (region as i32, 4))?;
@@ -99,8 +96,7 @@ fn raw_alloc_failure_records_last_error() -> anyhow::Result<()> {
     let mut host = TvmHost::new();
     let region = ManagerHost::create_region(&mut host, RegionKind::Scratch, 16)?;
     let (mut store, instance) = instantiate(host)?;
-    let alloc = instance
-        .get_typed_func::<(i32, i32), i64>(&mut store, "alloc")?;
+    let alloc = instance.get_typed_func::<(i32, i32), i64>(&mut store, "alloc")?;
 
     // Capacity 16, ask for 32: should fail.
     let result = alloc.call(&mut store, (region as i32, 32))?;
@@ -141,15 +137,27 @@ fn cross_region_copy_via_directory_helper() {
     let mut dir: tvm_core::RegionDirectory<tvm_core::VecBackedRegion> =
         tvm_core::RegionDirectory::new();
     let src = dir
-        .create_region(CoreRegionKind::HotHeap, 32, tvm_core::VecBackedRegion::new(32))
+        .create_region(
+            CoreRegionKind::HotHeap,
+            32,
+            tvm_core::VecBackedRegion::new(32),
+        )
         .unwrap();
     let dst = dir
-        .create_region(CoreRegionKind::Scratch, 32, tvm_core::VecBackedRegion::new(32))
+        .create_region(
+            CoreRegionKind::Scratch,
+            32,
+            tvm_core::VecBackedRegion::new(32),
+        )
         .unwrap();
     let h = dir.alloc(src, 4).unwrap();
     dir.write(h, b"PING").unwrap();
     dir.cross_region_copy(src, h.offset, dst, 0, 4).unwrap();
-    let dst_h = tvm_core::Handle { region_id: dst, generation: 1, offset: 0 };
+    let dst_h = tvm_core::Handle {
+        region_id: dst,
+        generation: 1,
+        offset: 0,
+    };
     let mut buf = [0u8; 4];
     dir.read(dst_h, &mut buf).unwrap();
     assert_eq!(&buf, b"PING");

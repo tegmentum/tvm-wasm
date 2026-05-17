@@ -43,12 +43,10 @@ fn intra_pool_copy_slides_live_data() -> anyhow::Result<()> {
     // Slide C from 192 → 64 and D from 224 → 96 by calling the
     // per-pool intra-copy helper from the host. After compaction the
     // first 192 bytes should be: [0..64)=0xaa, [64..96)=0xcc, [96..192)=0xdd.
-    let copy = instance.get_typed_func::<(i32, i32, i32), ()>(
-        &mut store,
-        "tvm_intra_pool_copy_p1",
-    )?;
-    copy.call(&mut store, (64, 192, 32))?;   // C → 64
-    copy.call(&mut store, (96, 224, 96))?;   // D → 96
+    let copy =
+        instance.get_typed_func::<(i32, i32, i32), ()>(&mut store, "tvm_intra_pool_copy_p1")?;
+    copy.call(&mut store, (64, 192, 32))?; // C → 64
+    copy.call(&mut store, (96, 224, 96))?; // D → 96
 
     // Verify the packed layout via a guest-side read.
     let read = instance.get_typed_func::<i32, i32>(&mut store, "read_p1")?;
@@ -88,18 +86,19 @@ fn intra_pool_copy_handles_overlap() -> anyhow::Result<()> {
     mem1.write(&mut store, 100, &pattern)?;
 
     // Slide [100..116) → [108..124). Overlaps in [108..116).
-    let copy = instance.get_typed_func::<(i32, i32, i32), ()>(
-        &mut store,
-        "tvm_intra_pool_copy_p1",
-    )?;
+    let copy =
+        instance.get_typed_func::<(i32, i32, i32), ()>(&mut store, "tvm_intra_pool_copy_p1")?;
     copy.call(&mut store, (108, 100, 16))?;
 
     // Verify destination has the original pattern; source is undefined
     // in the overlapping region but unchanged in the non-overlap.
     let read = instance.get_typed_func::<i32, i32>(&mut store, "read_p1")?;
     for i in 0..16i32 {
-        assert_eq!(read.call(&mut store, 108 + i)?, i as i32,
-            "destination byte at +{i}");
+        assert_eq!(
+            read.call(&mut store, 108 + i)?,
+            i as i32,
+            "destination byte at +{i}"
+        );
     }
     Ok(())
 }

@@ -3,7 +3,11 @@ use tvm_core::{Handle, RegionDirectory, RegionKind};
 
 #[test]
 fn pack_unpack_handle_roundtrip() {
-    let h = Handle { region_id: 3, generation: 7, offset: 1024 };
+    let h = Handle {
+        region_id: 3,
+        generation: 7,
+        offset: 1024,
+    };
     assert_eq!(Handle::unpack(h.pack()), h);
 }
 

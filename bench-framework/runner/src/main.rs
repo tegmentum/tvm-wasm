@@ -77,17 +77,10 @@ fn percentile(sorted: &[Duration], p: f64) -> u128 {
 // the rest of the runner doesn't have to know which crate it lives in.
 use tvm_test_harness::mann_whitney_u;
 
-fn summarize(
-    variant: &str,
-    class: &str,
-    size: u32,
-    timings: Vec<Duration>,
-    notes: &str,
-) -> Sample {
+fn summarize(variant: &str, class: &str, size: u32, timings: Vec<Duration>, notes: &str) -> Sample {
     let mut sorted = timings.clone();
     sorted.sort();
-    let mean_ns =
-        timings.iter().map(|d| d.as_nanos() as f64).sum::<f64>() / timings.len() as f64;
+    let mean_ns = timings.iter().map(|d| d.as_nanos() as f64).sum::<f64>() / timings.len() as f64;
     let throughput_gib_per_s = if mean_ns > 0.0 {
         (size as f64) / (mean_ns / 1e9) / (1u64 << 30) as f64
     } else {
@@ -114,9 +107,7 @@ fn summarize(
     }
 }
 
-fn time_loop<F: FnMut() -> anyhow::Result<()>>(
-    mut f: F,
-) -> anyhow::Result<Vec<Duration>> {
+fn time_loop<F: FnMut() -> anyhow::Result<()>>(mut f: F) -> anyhow::Result<Vec<Duration>> {
     for _ in 0..WARMUP_ROUNDS {
         f()?;
     }
@@ -143,9 +134,14 @@ fn new_m32(wasm: &[u8]) -> anyhow::Result<M32Ctx> {
     let linker: Linker<()> = Linker::new(&engine);
     let mut store = Store::new(&engine, ());
     let instance = linker.instantiate(&mut store, &module)?;
-    let buffer_ptr =
-        instance.get_typed_func::<(), u32>(&mut store, "buffer_ptr")?.call(&mut store, ())?;
-    Ok(M32Ctx { store, instance, buffer_ptr })
+    let buffer_ptr = instance
+        .get_typed_func::<(), u32>(&mut store, "buffer_ptr")?
+        .call(&mut store, ())?;
+    Ok(M32Ctx {
+        store,
+        instance,
+        buffer_ptr,
+    })
 }
 
 // -------------------- M64 setup --------------------
@@ -168,9 +164,14 @@ fn new_m64(wasm: &[u8]) -> anyhow::Result<M64Ctx> {
     let linker: Linker<()> = Linker::new(&engine);
     let mut store = Store::new(&engine, ());
     let instance = linker.instantiate(&mut store, &module)?;
-    let buffer_ptr =
-        instance.get_typed_func::<(), u64>(&mut store, "buffer_ptr")?.call(&mut store, ())?;
-    Ok(M64Ctx { store, instance, buffer_ptr })
+    let buffer_ptr = instance
+        .get_typed_func::<(), u64>(&mut store, "buffer_ptr")?
+        .call(&mut store, ())?;
+    Ok(M64Ctx {
+        store,
+        instance,
+        buffer_ptr,
+    })
 }
 
 // -------------------- TVM setup --------------------
@@ -190,7 +191,11 @@ fn new_tvm(wasm: &[u8], region_capacity: u32) -> anyhow::Result<TvmCtx> {
     add_raw_imports(&mut linker)?;
     let mut store = Store::new(&engine, host);
     let instance = linker.instantiate(&mut store, &module)?;
-    Ok(TvmCtx { store, instance, region })
+    Ok(TvmCtx {
+        store,
+        instance,
+        region,
+    })
 }
 
 // -------------------- TVM-Unified (imported memory + tvm.alloc) --------------------
@@ -222,26 +227,18 @@ const UNIFIED_WAT: &str = r#"
 
 fn run_tvm_unified_sequential(size: u32, data: &[u8]) -> anyhow::Result<Sample> {
     // One-call setup using the new helper.
-    let (engine, mut store, linker, ids) = tvm_wasmtime::build_imported_setup(
-        1,
-        size + 4096,
-        tvm_core::RegionKind::HotHeap,
-    )?;
+    let (engine, mut store, linker, ids) =
+        tvm_wasmtime::build_imported_setup(1, size + 4096, tvm_core::RegionKind::HotHeap)?;
     let region_id = ids[0];
     let handle = store.data_mut().imported_alloc(region_id, size)?;
 
     // Write payload into the region's wasm memory.
-    let memory = store
-        .data()
-        .imported_region(region_id)
-        .unwrap()
-        .memory();
+    let memory = store.data().imported_region(region_id).unwrap().memory();
     memory.write(&mut store, handle.offset as usize, data)?;
 
     let module = Module::new(&engine, UNIFIED_WAT)?;
     let instance = linker.instantiate(&mut store, &module)?;
-    let sum =
-        instance.get_typed_func::<(i32, i32), i64>(&mut store, "sum_in_r")?;
+    let sum = instance.get_typed_func::<(i32, i32), i64>(&mut store, "sum_in_r")?;
     let timings = time_loop(|| {
         let _ = sum.call(&mut store, (handle.offset as i32, size as i32))?;
         Ok(())
@@ -336,7 +333,10 @@ fn run_tvm_mm_sequential(size: u32, data: &[u8]) -> anyhow::Result<Sample> {
     // Pre-create two memories sized to comfortably hold our test data.
     let pages_needed = ((size as u64 + 65535) / 65536).max(1) as u32;
     let mut store = Store::new(&engine, ());
-    let mem0 = Memory::new(&mut store, MemoryType::new(pages_needed, Some(pages_needed)))?;
+    let mem0 = Memory::new(
+        &mut store,
+        MemoryType::new(pages_needed, Some(pages_needed)),
+    )?;
     let mem1 = Memory::new(&mut store, MemoryType::new(1, Some(1)))?;
     let mut linker: Linker<()> = Linker::new(&engine);
     linker.define(&mut store, "tvm", "r0", mem0)?;
@@ -363,7 +363,10 @@ fn run_tvm_mm_list(size: u32, bytes: &[u8], head_offset: u32) -> anyhow::Result<
     let module = Module::new(&engine, MM_WAT)?;
     let pages_needed = ((size as u64 + 65535) / 65536).max(1) as u32;
     let mut store = Store::new(&engine, ());
-    let mem0 = Memory::new(&mut store, MemoryType::new(pages_needed, Some(pages_needed)))?;
+    let mem0 = Memory::new(
+        &mut store,
+        MemoryType::new(pages_needed, Some(pages_needed)),
+    )?;
     let mem1 = Memory::new(&mut store, MemoryType::new(1, Some(1)))?;
     let mut linker: Linker<()> = Linker::new(&engine);
     linker.define(&mut store, "tvm", "r0", mem0)?;
@@ -397,16 +400,22 @@ fn run_tvm_mm_columnar(
     let pages_needed = ((size as u64 + 65535) / 65536).max(1) as u32;
     let mut store = Store::new(&engine, ());
     // Each column gets its own imported memory.
-    let mem_a = Memory::new(&mut store, MemoryType::new(pages_needed, Some(pages_needed)))?;
-    let mem_b = Memory::new(&mut store, MemoryType::new(pages_needed, Some(pages_needed)))?;
+    let mem_a = Memory::new(
+        &mut store,
+        MemoryType::new(pages_needed, Some(pages_needed)),
+    )?;
+    let mem_b = Memory::new(
+        &mut store,
+        MemoryType::new(pages_needed, Some(pages_needed)),
+    )?;
     let mut linker: Linker<()> = Linker::new(&engine);
     linker.define(&mut store, "tvm", "r0", mem_a)?;
     linker.define(&mut store, "tvm", "r1", mem_b)?;
     let instance = linker.instantiate(&mut store, &module)?;
     mem_a.write(&mut store, 0, col_a)?;
     mem_b.write(&mut store, 0, col_b)?;
-    let q = instance
-        .get_typed_func::<(i32, i32, i32, i32), i64>(&mut store, "columnar_filter_sum")?;
+    let q =
+        instance.get_typed_func::<(i32, i32, i32, i32), i64>(&mut store, "columnar_filter_sum")?;
     let timings = time_loop(|| {
         let _ = q.call(&mut store, (0, 0, n as i32, threshold as i32))?;
         Ok(())
@@ -435,21 +444,30 @@ fn bench_sequential(
     let mut a = new_m32(m32)?;
     let memory = a.instance.get_memory(&mut a.store, "memory").unwrap();
     memory.write(&mut a.store, a.buffer_ptr as usize, &data)?;
-    let sum = a.instance.get_typed_func::<(u32, u32), u64>(&mut a.store, "sum_sequential")?;
+    let sum = a
+        .instance
+        .get_typed_func::<(u32, u32), u64>(&mut a.store, "sum_sequential")?;
     let buf_ptr = a.buffer_ptr;
     let m32_t = time_loop(|| {
         let _ = sum.call(&mut a.store, (buf_ptr, size))?;
         Ok(())
     })?;
-    let s_m32 =
-        summarize("m32", "sequential_sum", size, m32_t, "engine-emitted load loop");
+    let s_m32 = summarize(
+        "m32",
+        "sequential_sum",
+        size,
+        m32_t,
+        "engine-emitted load loop",
+    );
 
     // M64
     let s_m64 = if let Some(m64_bytes) = m64 {
         let mut c = new_m64(m64_bytes)?;
         let memory = c.instance.get_memory(&mut c.store, "memory").unwrap();
         memory.write(&mut c.store, c.buffer_ptr as usize, &data)?;
-        let sum = c.instance.get_typed_func::<(u64, u64), u64>(&mut c.store, "sum_sequential")?;
+        let sum = c
+            .instance
+            .get_typed_func::<(u64, u64), u64>(&mut c.store, "sum_sequential")?;
         let buf_ptr = c.buffer_ptr;
         let m64_t = time_loop(|| {
             let _ = sum.call(&mut c.store, (buf_ptr, size as u64))?;
@@ -468,12 +486,15 @@ fn bench_sequential(
 
     // TVM
     let mut b = new_tvm(tvm, size + 4096)?;
-    let alloc =
-        b.instance.get_typed_func::<u32, i64>(&mut b.store, "tvm_alloc_in_region0")?;
-    let write =
-        b.instance.get_typed_func::<(i64, u32, u32), i32>(&mut b.store, "tvm_write_bytes")?;
-    let sum =
-        b.instance.get_typed_func::<(i64, u32), u64>(&mut b.store, "tvm_sum_sequential")?;
+    let alloc = b
+        .instance
+        .get_typed_func::<u32, i64>(&mut b.store, "tvm_alloc_in_region0")?;
+    let write = b
+        .instance
+        .get_typed_func::<(i64, u32, u32), i32>(&mut b.store, "tvm_write_bytes")?;
+    let sum = b
+        .instance
+        .get_typed_func::<(i64, u32), u64>(&mut b.store, "tvm_sum_sequential")?;
     let memory = b.instance.get_memory(&mut b.store, "memory").unwrap();
     let handle = alloc.call(&mut b.store, size)?;
     memory.write(&mut b.store, 0, &data)?;
@@ -483,8 +504,13 @@ fn bench_sequential(
         Ok(())
     })?;
     let _ = b.region;
-    let s_tvm =
-        summarize("tvm", "sequential_sum", size, tvm_t, "raw fast path; bulk reads");
+    let s_tvm = summarize(
+        "tvm",
+        "sequential_sum",
+        size,
+        tvm_t,
+        "raw fast path; bulk reads",
+    );
 
     let s_mm = run_tvm_mm_sequential(size, &data)
         .map_err(|e| eprintln!("tvm-mm sequential failed: {e}"))
@@ -535,8 +561,8 @@ fn bench_random(
 ) -> anyhow::Result<Vec<Sample>> {
     let cells = size / 4;
     let steps = 4 * cells; // 4 loops over the ring
-    // Build a deterministic ring: cell[i] = next index, where each index
-    // appears once.
+                           // Build a deterministic ring: cell[i] = next index, where each index
+                           // appears once.
     let mut ring: Vec<u32> = (0..cells).collect();
     // Knuth shuffle with fixed seed for determinism.
     let mut state = SEED.wrapping_add(7);
@@ -559,8 +585,9 @@ fn bench_random(
     let mut a = new_m32(m32)?;
     let memory = a.instance.get_memory(&mut a.store, "memory").unwrap();
     memory.write(&mut a.store, a.buffer_ptr as usize, &bytes)?;
-    let chase =
-        a.instance.get_typed_func::<(u32, u32, u32), u64>(&mut a.store, "random_chase")?;
+    let chase = a
+        .instance
+        .get_typed_func::<(u32, u32, u32), u64>(&mut a.store, "random_chase")?;
     let buf_ptr = a.buffer_ptr;
     let m32_t = time_loop(|| {
         let _ = chase.call(&mut a.store, (buf_ptr, cells, steps))?;
@@ -579,10 +606,9 @@ fn bench_random(
         let mut c = new_m64(m64_bytes)?;
         let memory = c.instance.get_memory(&mut c.store, "memory").unwrap();
         memory.write(&mut c.store, c.buffer_ptr as usize, &bytes)?;
-        let chase = c.instance.get_typed_func::<(u64, u64, u64), u64>(
-            &mut c.store,
-            "random_chase",
-        )?;
+        let chase = c
+            .instance
+            .get_typed_func::<(u64, u64, u64), u64>(&mut c.store, "random_chase")?;
         let buf_ptr = c.buffer_ptr;
         let m64_t = time_loop(|| {
             let _ = chase.call(&mut c.store, (buf_ptr, cells as u64, steps as u64))?;
@@ -600,13 +626,15 @@ fn bench_random(
     };
 
     let mut b = new_tvm(tvm, size + 4096)?;
-    let alloc =
-        b.instance.get_typed_func::<u32, i64>(&mut b.store, "tvm_alloc_in_region0")?;
-    let write =
-        b.instance.get_typed_func::<(i64, u32, u32), i32>(&mut b.store, "tvm_write_bytes")?;
-    let chase =
-        b.instance
-            .get_typed_func::<(i64, u32, u32), u64>(&mut b.store, "tvm_random_chase")?;
+    let alloc = b
+        .instance
+        .get_typed_func::<u32, i64>(&mut b.store, "tvm_alloc_in_region0")?;
+    let write = b
+        .instance
+        .get_typed_func::<(i64, u32, u32), i32>(&mut b.store, "tvm_write_bytes")?;
+    let chase = b
+        .instance
+        .get_typed_func::<(i64, u32, u32), u64>(&mut b.store, "tvm_random_chase")?;
     let memory = b.instance.get_memory(&mut b.store, "memory").unwrap();
     let handle = alloc.call(&mut b.store, cells * 4)?;
     memory.write(&mut b.store, 0, &bytes)?;
@@ -663,7 +691,9 @@ fn bench_list(
     let mut a = new_m32(m32)?;
     let memory = a.instance.get_memory(&mut a.store, "memory").unwrap();
     memory.write(&mut a.store, a.buffer_ptr as usize, &bytes)?;
-    let walk = a.instance.get_typed_func::<(u32, u32), u64>(&mut a.store, "list_walk")?;
+    let walk = a
+        .instance
+        .get_typed_func::<(u32, u32), u64>(&mut a.store, "list_walk")?;
     let buf_ptr = a.buffer_ptr;
     let m32_t = time_loop(|| {
         let _ = walk.call(&mut a.store, (buf_ptr, head_offset))?;
@@ -675,22 +705,32 @@ fn bench_list(
         let mut c = new_m64(m64_bytes)?;
         let memory = c.instance.get_memory(&mut c.store, "memory").unwrap();
         memory.write(&mut c.store, c.buffer_ptr as usize, &bytes)?;
-        let walk = c.instance.get_typed_func::<(u64, u64), u64>(&mut c.store, "list_walk")?;
+        let walk = c
+            .instance
+            .get_typed_func::<(u64, u64), u64>(&mut c.store, "list_walk")?;
         let buf_ptr = c.buffer_ptr;
         let m64_t = time_loop(|| {
             let _ = walk.call(&mut c.store, (buf_ptr, head_offset as u64))?;
             Ok(())
         })?;
-        Some(summarize("m64", "list_walk", size, m64_t, "wasm64 node load"))
+        Some(summarize(
+            "m64",
+            "list_walk",
+            size,
+            m64_t,
+            "wasm64 node load",
+        ))
     } else {
         None
     };
 
     let mut b = new_tvm(tvm, size + 4096)?;
-    let alloc =
-        b.instance.get_typed_func::<u32, i64>(&mut b.store, "tvm_alloc_in_region0")?;
-    let write =
-        b.instance.get_typed_func::<(i64, u32, u32), i32>(&mut b.store, "tvm_write_bytes")?;
+    let alloc = b
+        .instance
+        .get_typed_func::<u32, i64>(&mut b.store, "tvm_alloc_in_region0")?;
+    let write = b
+        .instance
+        .get_typed_func::<(i64, u32, u32), i32>(&mut b.store, "tvm_write_bytes")?;
     let walk = b
         .instance
         .get_typed_func::<(i64, u32, u32), u64>(&mut b.store, "tvm_list_walk")?;
@@ -703,7 +743,13 @@ fn bench_list(
         let _ = walk.call(&mut b.store, (handle, head_offset, total_bytes))?;
         Ok(())
     })?;
-    let s_tvm = summarize("tvm", "list_walk", size, tvm_t, "raw bulk read; walk in guest");
+    let s_tvm = summarize(
+        "tvm",
+        "list_walk",
+        size,
+        tvm_t,
+        "raw bulk read; walk in guest",
+    );
     let s_mm = run_tvm_mm_list(size, &bytes, head_offset).ok();
     Ok(samples_with_mm(s_m32, s_m64, s_mm, s_tvm))
 }
@@ -728,21 +774,25 @@ fn bench_growth(
         let _ = bump.call(&mut a.store, (buf_ptr, count, block))?;
         Ok(())
     })?;
-    let s_m32 =
-        summarize("m32", "growth_bump", size, m32_t, "static buffer + index");
+    let s_m32 = summarize("m32", "growth_bump", size, m32_t, "static buffer + index");
 
     let s_m64 = if let Some(m64_bytes) = m64 {
         let mut c = new_m64(m64_bytes)?;
-        let bump = c.instance.get_typed_func::<(u64, u64, u64), u64>(
-            &mut c.store,
-            "bump_alloc_touch",
-        )?;
+        let bump = c
+            .instance
+            .get_typed_func::<(u64, u64, u64), u64>(&mut c.store, "bump_alloc_touch")?;
         let buf_ptr = c.buffer_ptr;
         let m64_t = time_loop(|| {
             let _ = bump.call(&mut c.store, (buf_ptr, count as u64, block as u64))?;
             Ok(())
         })?;
-        Some(summarize("m64", "growth_bump", size, m64_t, "wasm64 static + index"))
+        Some(summarize(
+            "m64",
+            "growth_bump",
+            size,
+            m64_t,
+            "wasm64 static + index",
+        ))
     } else {
         None
     };
@@ -761,8 +811,7 @@ fn bench_growth(
             tvm_t.push(elapsed);
         }
     }
-    let s_tvm =
-        summarize("tvm", "growth_bump", size, tvm_t, "fresh region per sample");
+    let s_tvm = summarize("tvm", "growth_bump", size, tvm_t, "fresh region per sample");
     Ok(samples_with_optional(s_m32, s_m64, s_tvm))
 }
 
@@ -803,10 +852,7 @@ fn bench_multi_region(
     )?;
     let mix = a
         .instance
-        .get_typed_func::<(u32, u32, u32, u32, u32, u32), u64>(
-            &mut a.store,
-            "multi_region_mix",
-        )?;
+        .get_typed_func::<(u32, u32, u32, u32, u32, u32), u64>(&mut a.store, "multi_region_mix")?;
     let buf_ptr = a.buffer_ptr;
     let m32_t = time_loop(|| {
         let _ = mix.call(
@@ -838,10 +884,12 @@ fn bench_multi_region(
             c.buffer_ptr as usize + (hot_size + warm_size) as usize,
             &cold,
         )?;
-        let mix = c.instance.get_typed_func::<(u64, u64, u64, u64, u64, u32), u64>(
-            &mut c.store,
-            "multi_region_mix",
-        )?;
+        let mix = c
+            .instance
+            .get_typed_func::<(u64, u64, u64, u64, u64, u32), u64>(
+                &mut c.store,
+                "multi_region_mix",
+            )?;
         let buf_ptr = c.buffer_ptr;
         let m64_t = time_loop(|| {
             let _ = mix.call(
@@ -872,8 +920,7 @@ fn bench_multi_region(
     let engine = Engine::default();
     let module = Module::new(&engine, tvm)?;
     let mut host = TvmHost::new();
-    let r_hot =
-        ManagerHost::create_region(&mut host, RegionKind::HotHeap, hot_size + 64).unwrap();
+    let r_hot = ManagerHost::create_region(&mut host, RegionKind::HotHeap, hot_size + 64).unwrap();
     let r_warm =
         ManagerHost::create_region(&mut host, RegionKind::ObjectArena, warm_size + 64).unwrap();
     let r_cold =
@@ -884,8 +931,7 @@ fn bench_multi_region(
     let mut store = Store::new(&engine, host);
     let instance = linker.instantiate(&mut store, &module)?;
     let alloc = instance.get_typed_func::<u32, i64>(&mut store, "tvm_alloc_in_region0")?;
-    let write =
-        instance.get_typed_func::<(i64, u32, u32), i32>(&mut store, "tvm_write_bytes")?;
+    let write = instance.get_typed_func::<(i64, u32, u32), i32>(&mut store, "tvm_write_bytes")?;
     let memory = instance.get_memory(&mut store, "memory").unwrap();
 
     let h_hot = alloc.call(&mut store, hot_size)?;
@@ -909,15 +955,16 @@ fn bench_multi_region(
     memory.write(&mut store, 0, &cold)?;
     let _ = write.call(&mut store, (h_cold, 0, cold_size))?;
 
-    let mix = instance
-        .get_typed_func::<(i64, u32, i64, u32, i64, u32, u32, u32), u64>(
-            &mut store,
-            "tvm_multi_region_mix",
-        )?;
+    let mix = instance.get_typed_func::<(i64, u32, i64, u32, i64, u32, u32, u32), u64>(
+        &mut store,
+        "tvm_multi_region_mix",
+    )?;
     let tvm_t = time_loop(|| {
         let _ = mix.call(
             &mut store,
-            (h_hot, hot_size, h_warm, warm_size, h_cold, cold_size, iters, SEED),
+            (
+                h_hot, hot_size, h_warm, warm_size, h_cold, cold_size, iters, SEED,
+            ),
         )?;
         Ok(())
     })?;
@@ -940,7 +987,7 @@ fn bench_columnar(
     size: u32,
 ) -> anyhow::Result<Vec<Sample>> {
     let n = size / 8; // u32 col_a + u32 col_b
-    // Fill col_a with deterministic 0..n and col_b with a payload.
+                      // Fill col_a with deterministic 0..n and col_b with a payload.
     let mut col_a = vec![0u8; (n * 4) as usize];
     let mut col_b = vec![0u8; (n * 4) as usize];
     for i in 0..n {
@@ -953,11 +1000,7 @@ fn bench_columnar(
     let mut a = new_m32(m32)?;
     let memory = a.instance.get_memory(&mut a.store, "memory").unwrap();
     memory.write(&mut a.store, a.buffer_ptr as usize, &col_a)?;
-    memory.write(
-        &mut a.store,
-        a.buffer_ptr as usize + col_a.len(),
-        &col_b,
-    )?;
+    memory.write(&mut a.store, a.buffer_ptr as usize + col_a.len(), &col_b)?;
     let q = a
         .instance
         .get_typed_func::<(u32, u32, u32), u64>(&mut a.store, "columnar_filter_sum")?;
@@ -966,23 +1009,23 @@ fn bench_columnar(
         let _ = q.call(&mut a.store, (buf_ptr, n, threshold))?;
         Ok(())
     })?;
-    let s_m32 =
-        summarize("m32", "columnar_filter_sum", size, m32_t, "two cols contiguous");
+    let s_m32 = summarize(
+        "m32",
+        "columnar_filter_sum",
+        size,
+        m32_t,
+        "two cols contiguous",
+    );
 
     // M64
     let s_m64 = if let Some(m64_bytes) = m64 {
         let mut c = new_m64(m64_bytes)?;
         let memory = c.instance.get_memory(&mut c.store, "memory").unwrap();
         memory.write(&mut c.store, c.buffer_ptr as usize, &col_a)?;
-        memory.write(
-            &mut c.store,
-            c.buffer_ptr as usize + col_a.len(),
-            &col_b,
-        )?;
-        let q = c.instance.get_typed_func::<(u64, u64, u32), u64>(
-            &mut c.store,
-            "columnar_filter_sum",
-        )?;
+        memory.write(&mut c.store, c.buffer_ptr as usize + col_a.len(), &col_b)?;
+        let q = c
+            .instance
+            .get_typed_func::<(u64, u64, u32), u64>(&mut c.store, "columnar_filter_sum")?;
         let buf_ptr = c.buffer_ptr;
         let m64_t = time_loop(|| {
             let _ = q.call(&mut c.store, (buf_ptr, n as u64, threshold))?;
@@ -1010,8 +1053,7 @@ fn bench_columnar(
     let mut store = Store::new(&engine, host);
     let instance = linker.instantiate(&mut store, &module)?;
     let alloc = instance.get_typed_func::<u32, i64>(&mut store, "tvm_alloc_in_region0")?;
-    let write =
-        instance.get_typed_func::<(i64, u32, u32), i32>(&mut store, "tvm_write_bytes")?;
+    let write = instance.get_typed_func::<(i64, u32, u32), i32>(&mut store, "tvm_write_bytes")?;
     let memory = instance.get_memory(&mut store, "memory").unwrap();
     // Region 0 was r_a.
     let h_a = alloc.call(&mut store, n * 4)?;
@@ -1085,7 +1127,10 @@ fn bench_spill_driven(
         speedup_vs_baseline: None,
         speedup_vs_m64: None,
     };
-    let m64_s = Sample { variant: "m64".into(), ..m32_s.clone() };
+    let m64_s = Sample {
+        variant: "m64".into(),
+        ..m32_s.clone()
+    };
 
     // TVM: build a host with a backing store, create n_tiers regions of
     // resident_budget bytes each, do a workload that touches each tier in
@@ -1110,9 +1155,7 @@ fn bench_spill_driven(
             resident_budget + 64,
         )?;
         let h = store.data_mut().directory.alloc(r, resident_budget)?;
-        let packed = (h.region_id as i64) << 48
-            | (h.generation as i64) << 32
-            | (h.offset as i64);
+        let packed = (h.region_id as i64) << 48 | (h.generation as i64) << 32 | (h.offset as i64);
         // Write a few bytes so the spill has something real to persist.
         store.data_mut().directory.write(h, &vec![0xAA; 64])?;
         handles.push(packed);
@@ -1120,8 +1163,7 @@ fn bench_spill_driven(
 
     // Touch each handle in round-robin, demoting the just-touched-and-now-
     // inactive ones to Cold via spill. Time the cycle.
-    let read_fn =
-        instance.get_typed_func::<(i64, u32), u64>(&mut store, "tvm_sum_sequential")?;
+    let read_fn = instance.get_typed_func::<(i64, u32), u64>(&mut store, "tvm_sum_sequential")?;
 
     let cycles = 8u32;
     let touched_per_cycle = n_tiers;
@@ -1171,10 +1213,9 @@ fn bench_large_ws(
     let mut a = new_m32(m32)?;
     let memory = a.instance.get_memory(&mut a.store, "memory").unwrap();
     memory.write(&mut a.store, a.buffer_ptr as usize, &data)?;
-    let probe = a.instance.get_typed_func::<(u32, u32, u32, u32, u32), u64>(
-        &mut a.store,
-        "large_ws_probe",
-    )?;
+    let probe = a
+        .instance
+        .get_typed_func::<(u32, u32, u32, u32, u32), u64>(&mut a.store, "large_ws_probe")?;
     let buf_ptr = a.buffer_ptr;
     let m32_t = time_loop(|| {
         let _ = probe.call(&mut a.store, (buf_ptr, block_size, n_blocks, iters, SEED))?;
@@ -1192,15 +1233,20 @@ fn bench_large_ws(
         let mut c = new_m64(m64_bytes)?;
         let memory = c.instance.get_memory(&mut c.store, "memory").unwrap();
         memory.write(&mut c.store, c.buffer_ptr as usize, &data)?;
-        let probe = c.instance.get_typed_func::<(u64, u64, u64, u64, u32), u64>(
-            &mut c.store,
-            "large_ws_probe",
-        )?;
+        let probe = c
+            .instance
+            .get_typed_func::<(u64, u64, u64, u64, u32), u64>(&mut c.store, "large_ws_probe")?;
         let buf_ptr = c.buffer_ptr;
         let m64_t = time_loop(|| {
             let _ = probe.call(
                 &mut c.store,
-                (buf_ptr, block_size as u64, n_blocks as u64, iters as u64, SEED),
+                (
+                    buf_ptr,
+                    block_size as u64,
+                    n_blocks as u64,
+                    iters as u64,
+                    SEED,
+                ),
             )?;
             Ok(())
         })?;
@@ -1227,8 +1273,7 @@ fn bench_large_ws(
     let mut store = Store::new(&engine, host);
     let instance = linker.instantiate(&mut store, &module)?;
     let alloc = instance.get_typed_func::<u32, i64>(&mut store, "tvm_alloc_in_region0")?;
-    let write =
-        instance.get_typed_func::<(i64, u32, u32), i32>(&mut store, "tvm_write_bytes")?;
+    let write = instance.get_typed_func::<(i64, u32, u32), i32>(&mut store, "tvm_write_bytes")?;
     let memory = instance.get_memory(&mut store, "memory").unwrap();
 
     // Seed each block: alloc handle in its own region, write data.
@@ -1243,9 +1288,7 @@ fn bench_large_ws(
         let off = (i * block_size) as usize;
         let chunk = &data[off..off + block_size as usize];
         let h = store.data_mut().directory.alloc(i as u16, block_size)?;
-        let packed = (h.region_id as i64) << 48
-            | (h.generation as i64) << 32
-            | (h.offset as i64);
+        let packed = (h.region_id as i64) << 48 | (h.generation as i64) << 32 | (h.offset as i64);
         memory.write(&mut store, 0, chunk)?;
         let _ = write.call(&mut store, (packed, 0, block_size))?;
         packed_handles.push(packed);
@@ -1265,10 +1308,8 @@ fn bench_large_ws(
     }
     memory.write(&mut store, handles_offset as usize, &handles_bytes)?;
 
-    let probe = instance.get_typed_func::<(u32, u32, u32, u32, u32), u64>(
-        &mut store,
-        "tvm_large_ws_probe",
-    )?;
+    let probe = instance
+        .get_typed_func::<(u32, u32, u32, u32, u32), u64>(&mut store, "tvm_large_ws_probe")?;
     let tvm_t = time_loop(|| {
         let _ = probe.call(
             &mut store,
@@ -1289,12 +1330,7 @@ fn bench_large_ws(
 
 // -------------------- 4.7 JVM heap --------------------
 
-fn bench_jvm(
-    m32: &[u8],
-    tvm: &[u8],
-    m64: Option<&[u8]>,
-    size: u32,
-) -> anyhow::Result<Vec<Sample>> {
+fn bench_jvm(m32: &[u8], tvm: &[u8], m64: Option<&[u8]>, size: u32) -> anyhow::Result<Vec<Sample>> {
     let n = size / 32;
     let mut a = new_m32(m32)?;
     let scan = a
@@ -1305,8 +1341,13 @@ fn bench_jvm(
         let _ = scan.call(&mut a.store, (buf_ptr, n))?;
         Ok(())
     })?;
-    let s_m32 =
-        summarize("m32", "jvm_gen_alloc_scan", size, m32_t, "static buffer + index");
+    let s_m32 = summarize(
+        "m32",
+        "jvm_gen_alloc_scan",
+        size,
+        m32_t,
+        "static buffer + index",
+    );
 
     let s_m64 = if let Some(m64_bytes) = m64 {
         let mut c = new_m64(m64_bytes)?;
@@ -1357,7 +1398,10 @@ fn bench_jvm(
 
 fn auto_build_workloads() -> anyhow::Result<()> {
     let root = workspace_root();
-    for dir in &["bench-framework/workloads/m32", "bench-framework/workloads/tvm"] {
+    for dir in &[
+        "bench-framework/workloads/m32",
+        "bench-framework/workloads/tvm",
+    ] {
         let status = Command::new("cargo")
             .current_dir(root.join(dir))
             .args(["build", "--release", "--target", "wasm32-unknown-unknown"])
@@ -1408,7 +1452,11 @@ fn annotate_against_baseline(samples: &mut [Sample]) {
         .map(|s| s.mean_ns);
     for s in samples.iter_mut().skip(1) {
         let u = mann_whitney_u(&baseline_raw, &s.raw_ns);
-        let speedup = if s.mean_ns > 0.0 { baseline_mean / s.mean_ns } else { 0.0 };
+        let speedup = if s.mean_ns > 0.0 {
+            baseline_mean / s.mean_ns
+        } else {
+            0.0
+        };
         s.mann_whitney_u_vs_baseline = Some(u);
         s.speedup_vs_baseline = Some(speedup);
         if let Some(m) = m64_mean {
@@ -1430,7 +1478,11 @@ fn main() -> anyhow::Result<()> {
         "bench-framework/workloads/tvm/target/wasm32-unknown-unknown/release/tvm_bench_workload_tvm.wasm",
     )?;
     let m64_wasm = try_read_m64_wasm();
-    let m64_status = if m64_wasm.is_some() { "available" } else { "absent — skipping" };
+    let m64_status = if m64_wasm.is_some() {
+        "available"
+    } else {
+        "absent — skipping"
+    };
     println!("==> M64 backend: {}", m64_status);
 
     let mut results: Vec<Sample> = Vec::new();

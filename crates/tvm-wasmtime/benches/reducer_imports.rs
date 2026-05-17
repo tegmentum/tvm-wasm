@@ -30,15 +30,17 @@ const SIZES: &[u32] = &[1024, 16 * 1024, 65536, 262_144];
 
 fn pct(sorted: &[Duration], p: f64) -> u128 {
     let n = sorted.len();
-    if n == 0 { return 0; }
+    if n == 0 {
+        return 0;
+    }
     let idx = ((p / 100.0) * (n as f64 - 1.0)).round() as usize;
     sorted[idx.min(n - 1)].as_nanos()
 }
 
-fn time_loop<F: FnMut() -> anyhow::Result<()>>(
-    mut f: F,
-) -> anyhow::Result<Vec<Duration>> {
-    for _ in 0..WARMUP { f()?; }
+fn time_loop<F: FnMut() -> anyhow::Result<()>>(mut f: F) -> anyhow::Result<Vec<Duration>> {
+    for _ in 0..WARMUP {
+        f()?;
+    }
     let mut t = Vec::with_capacity(SAMPLES);
     for _ in 0..SAMPLES {
         let s = Instant::now();
@@ -50,8 +52,7 @@ fn time_loop<F: FnMut() -> anyhow::Result<()>>(
 
 fn report(label: &str, size: u32, t: &mut Vec<Duration>) {
     t.sort();
-    let mean = t.iter().map(|d| d.as_nanos() as f64).sum::<f64>()
-        / t.len() as f64;
+    let mean = t.iter().map(|d| d.as_nanos() as f64).sum::<f64>() / t.len() as f64;
     let p99 = pct(t, 99.0);
     let bw = (size as f64) / (mean / 1e9) / (1u64 << 30) as f64;
     println!(
@@ -163,16 +164,17 @@ fn setup(size: u32, data: &[u8]) -> anyhow::Result<(Store<TvmHost>, i64)> {
     Ok((store, h.pack() as i64))
 }
 
-fn run(wat_src: &str, fn_name: &str, size: u32, data: &[u8])
-    -> anyhow::Result<Vec<Duration>>
-{
+fn run(wat_src: &str, fn_name: &str, size: u32, data: &[u8]) -> anyhow::Result<Vec<Duration>> {
     let (mut store, packed) = setup(size, data)?;
     let module = Module::new(store.engine(), wat_src)?;
     let mut linker: Linker<TvmHost> = Linker::new(store.engine());
     add_raw_imports(&mut linker)?;
     let instance = linker.instantiate(&mut store, &module)?;
     let f = instance.get_typed_func::<(i64, i32), i64>(&mut store, fn_name)?;
-    time_loop(|| { let _ = f.call(&mut store, (packed, size as i32))?; Ok(()) })
+    time_loop(|| {
+        let _ = f.call(&mut store, (packed, size as i32))?;
+        Ok(())
+    })
 }
 
 fn run3(
@@ -188,10 +190,19 @@ fn run3(
     add_raw_imports(&mut linker)?;
     let instance = linker.instantiate(&mut store, &module)?;
     let f = instance.get_typed_func::<(i64, i32, i32), i32>(&mut store, fn_name)?;
-    time_loop(|| { let _ = f.call(&mut store, (packed, size as i32, extra))?; Ok(()) })
+    time_loop(|| {
+        let _ = f.call(&mut store, (packed, size as i32, extra))?;
+        Ok(())
+    })
 }
 
-fn pair_summary(label_c: &str, label_r: &str, classic: Vec<Duration>, reducer: Vec<Duration>, size: u32) {
+fn pair_summary(
+    label_c: &str,
+    label_r: &str,
+    classic: Vec<Duration>,
+    reducer: Vec<Duration>,
+    size: u32,
+) {
     let mut classic = classic;
     let mut reducer = reducer;
     report(label_c, size, &mut classic);
@@ -201,7 +212,10 @@ fn pair_summary(label_c: &str, label_r: &str, classic: Vec<Duration>, reducer: V
     let mean = |v: &[u128]| v.iter().map(|n| *n as f64).sum::<f64>() / v.len() as f64;
     let speedup = mean(&raw_c) / mean(&raw_r);
     let u = mann_whitney_u(&raw_c, &raw_r);
-    println!("    speedup reducer / classic = {:.2}x   U={:.3}", speedup, u);
+    println!(
+        "    speedup reducer / classic = {:.2}x   U={:.3}",
+        speedup, u
+    );
 }
 
 fn main() -> anyhow::Result<()> {
@@ -218,19 +232,37 @@ fn main() -> anyhow::Result<()> {
         println!("  [sum_u8]");
         let c = run(CLASSIC_WAT, "sum_via_read", size, &data)?;
         let r = run(REDUCER_WAT, "sum_via_reducer", size, &data)?;
-        pair_summary("    classic (read+loop)", "    reducer (sum_u8)", c, r, size);
+        pair_summary(
+            "    classic (read+loop)",
+            "    reducer (sum_u8)",
+            c,
+            r,
+            size,
+        );
 
         // count_byte — reduce with a predicate
         println!("  [count_byte]");
         let c = run3(COUNT_CLASSIC_WAT, "count_via_read", size, &data, 0x42)?;
         let r = run3(COUNT_REDUCER_WAT, "count_via_reducer", size, &data, 0x42)?;
-        pair_summary("    classic (read+loop)", "    reducer (count_byte)", c, r, size);
+        pair_summary(
+            "    classic (read+loop)",
+            "    reducer (count_byte)",
+            c,
+            r,
+            size,
+        );
 
         // popcount — bit-counting reduction
         println!("  [popcount]");
         let c = run(POPCOUNT_CLASSIC_WAT, "popcount_via_read", size, &data)?;
         let r = run(POPCOUNT_REDUCER_WAT, "popcount_via_reducer", size, &data)?;
-        pair_summary("    classic (read+loop)", "    reducer (popcount)", c, r, size);
+        pair_summary(
+            "    classic (read+loop)",
+            "    reducer (popcount)",
+            c,
+            r,
+            size,
+        );
 
         println!();
     }

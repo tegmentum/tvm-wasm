@@ -57,7 +57,11 @@ fn cache_lookup_after_collision_returns_correct_data() {
         pinnable: true,
         spillable: false,
     };
-    let r8 = Region { id: 8, capacity: 200, ..r0 };
+    let r8 = Region {
+        id: 8,
+        capacity: 200,
+        ..r0
+    };
 
     cache.install(&r0);
     let hit0 = cache.lookup(0).unwrap();

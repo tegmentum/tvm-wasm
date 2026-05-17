@@ -23,13 +23,17 @@ const SIZES: &[u32] = &[1024, 16 * 1024, 65536, 262_144];
 
 fn pct(sorted: &[Duration], p: f64) -> u128 {
     let n = sorted.len();
-    if n == 0 { return 0; }
+    if n == 0 {
+        return 0;
+    }
     let idx = ((p / 100.0) * (n as f64 - 1.0)).round() as usize;
     sorted[idx.min(n - 1)].as_nanos()
 }
 
 fn time_loop<F: FnMut() -> anyhow::Result<()>>(mut f: F) -> anyhow::Result<Vec<Duration>> {
-    for _ in 0..WARMUP { f()?; }
+    for _ in 0..WARMUP {
+        f()?;
+    }
     let mut t = Vec::with_capacity(SAMPLES);
     for _ in 0..SAMPLES {
         let s = Instant::now();
@@ -346,7 +350,10 @@ fn run_guest_mm_popcount_simd(size: u32, data: &[u8]) -> anyhow::Result<Vec<Dura
     let mem1 = instance.get_memory(&mut store, "mem1").unwrap();
     mem1.write(&mut store, 0, data)?;
     let f = instance.get_typed_func::<(i32, i32), i64>(&mut store, "popcount_via_simd")?;
-    time_loop(|| { let _ = f.call(&mut store, (0, size as i32))?; Ok(()) })
+    time_loop(|| {
+        let _ = f.call(&mut store, (0, size as i32))?;
+        Ok(())
+    })
 }
 
 fn run_guest_mm_popcount_scalar(size: u32, data: &[u8]) -> anyhow::Result<Vec<Duration>> {
@@ -383,7 +390,10 @@ fn run_guest_mm_popcount_scalar(size: u32, data: &[u8]) -> anyhow::Result<Vec<Du
     let mem1 = instance.get_memory(&mut store, "mem1").unwrap();
     mem1.write(&mut store, 0, data)?;
     let f = instance.get_typed_func::<(i32, i32), i64>(&mut store, "popcount_via_scalar")?;
-    time_loop(|| { let _ = f.call(&mut store, (0, size as i32))?; Ok(()) })
+    time_loop(|| {
+        let _ = f.call(&mut store, (0, size as i32))?;
+        Ok(())
+    })
 }
 
 // ---------- Guest-mm SIMD sum kernel ----------
@@ -433,9 +443,13 @@ fn main() -> anyhow::Result<()> {
         let m32 = summarize("m32 native", run_m32(size, &data)?, size);
         let m64 = summarize("m64 native", run_m64(size, &data)?, size);
         let raw = summarize("host TVM raw", run_host_raw(size, &data)?, size);
-        let mm  = summarize("host TVM-MM", run_host_mm(size, &data)?, size);
+        let mm = summarize("host TVM-MM", run_host_mm(size, &data)?, size);
         let gmm = summarize("guest-mm bulk", run_guest_mm_bulk(size, &data)?, size);
-        let gms = summarize("guest-mm spec", run_guest_mm_bulk_specialized(size, &data)?, size);
+        let gms = summarize(
+            "guest-mm spec",
+            run_guest_mm_bulk_specialized(size, &data)?,
+            size,
+        );
         let sim = summarize("guest-mm simd", run_guest_mm_simd(size, &data)?, size);
 
         println!("--- size = {} bytes ---", size);
@@ -451,10 +465,7 @@ fn main() -> anyhow::Result<()> {
         for r in &[&m64, &raw, &mm, &gmm, &gms, &sim] {
             let speedup = baseline / r.mean_ns;
             let u = mann_whitney_u(&m32.raw, &r.raw);
-            println!(
-                "    {:<16} {:>5.2}x m32   U={:.3}",
-                r.label, speedup, u
-            );
+            println!("    {:<16} {:>5.2}x m32   U={:.3}", r.label, speedup, u);
         }
         println!();
     }
@@ -463,8 +474,16 @@ fn main() -> anyhow::Result<()> {
     println!("==> popcount: scalar dispatch vs SIMD reducer");
     for &size in SIZES {
         let data: Vec<u8> = (0..size).map(|i| (i & 0xFF) as u8).collect();
-        let scalar = summarize("scalar (per-byte)", run_guest_mm_popcount_scalar(size, &data)?, size);
-        let simd   = summarize("simd (popcount)",   run_guest_mm_popcount_simd(size, &data)?, size);
+        let scalar = summarize(
+            "scalar (per-byte)",
+            run_guest_mm_popcount_scalar(size, &data)?,
+            size,
+        );
+        let simd = summarize(
+            "simd (popcount)",
+            run_guest_mm_popcount_simd(size, &data)?,
+            size,
+        );
         println!("--- size = {} bytes ---", size);
         for r in &[&scalar, &simd] {
             println!(

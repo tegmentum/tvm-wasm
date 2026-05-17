@@ -18,7 +18,14 @@ fn handle_from_old_generation_is_stale() {
 #[test]
 fn handle_for_unknown_region_errors() {
     let dir: RegionDirectory<VecBackedRegion> = RegionDirectory::new();
-    let bad = tvm_core::Handle { region_id: 99, generation: 1, offset: 0 };
+    let bad = tvm_core::Handle {
+        region_id: 99,
+        generation: 1,
+        offset: 0,
+    };
     let mut out = [0u8; 4];
-    assert!(matches!(dir.read(bad, &mut out), Err(TvmError::RegionNotFound(99))));
+    assert!(matches!(
+        dir.read(bad, &mut out),
+        Err(TvmError::RegionNotFound(99))
+    ));
 }

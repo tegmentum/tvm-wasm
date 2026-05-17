@@ -98,8 +98,7 @@ fn many_imported_regions_round_trip() -> anyhow::Result<()> {
     let instance = linker.instantiate(&mut store, &module)?;
 
     for region_id in 0..N_REGIONS {
-        let f = instance
-            .get_typed_func::<i32, i64>(&mut store, &format!("read_r{region_id}"))?;
+        let f = instance.get_typed_func::<i32, i64>(&mut store, &format!("read_r{region_id}"))?;
         let got = f.call(&mut store, 0)? as u64;
         let expected = 0xCAFE_BABE_0000_0000 | (region_id as u64);
         assert_eq!(

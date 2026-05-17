@@ -36,10 +36,7 @@ pub fn dump_region_layout<M: MemoryRegion>(dir: &RegionDirectory<M>) -> String {
     out
 }
 
-pub fn validate_handle<M: MemoryRegion>(
-    dir: &RegionDirectory<M>,
-    handle: Handle,
-) -> HandleStatus {
+pub fn validate_handle<M: MemoryRegion>(dir: &RegionDirectory<M>, handle: Handle) -> HandleStatus {
     let info: &Region = match dir.region_info(handle.region_id) {
         Ok(i) => i,
         Err(_) => return HandleStatus::UnknownRegion,
@@ -50,7 +47,10 @@ pub fn validate_handle<M: MemoryRegion>(
     if handle.offset >= info.capacity {
         return HandleStatus::OutOfBounds;
     }
-    if !matches!(info.residency, crate::residency::Residency::Hot | crate::residency::Residency::Warm) {
+    if !matches!(
+        info.residency,
+        crate::residency::Residency::Hot | crate::residency::Residency::Warm
+    ) {
         return HandleStatus::NotResident;
     }
     HandleStatus::Valid

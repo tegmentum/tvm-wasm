@@ -78,10 +78,7 @@ impl<T> RuntimeMemoryRegion<wasmtime::Store<T>> for WasmtimeMemoryRegion {
     }
 
     fn restore(cx: &mut wasmtime::Store<T>, bytes: Vec<u8>) -> Result<Self> {
-        let pages = bytes
-            .len()
-            .div_ceil(WASM_PAGE_SIZE as usize)
-            .max(1) as u32;
+        let pages = bytes.len().div_ceil(WASM_PAGE_SIZE as usize).max(1) as u32;
         let ty = MemoryType::new(pages, None);
         let memory = Memory::new(cx.as_context_mut(), ty)
             .map_err(|e| TvmError::BackingStore(e.to_string()))?;

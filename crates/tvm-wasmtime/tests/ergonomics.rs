@@ -22,7 +22,11 @@ fn one_liner_alloc_in_new_region() {
 
 #[test]
 fn handle_display_and_conversions() {
-    let h = Handle { region_id: 7, generation: 5, offset: 1024 };
+    let h = Handle {
+        region_id: 7,
+        generation: 5,
+        offset: 1024,
+    };
     assert_eq!(h.to_string(), "r7@5+1024");
     assert_eq!(format!("{:?}", h), "Handle(r7@gen5+0x400)");
 
@@ -42,8 +46,7 @@ fn handle_display_and_conversions() {
 
 #[test]
 fn builder_quickstart() -> wasmtime::Result<()> {
-    let (_engine, _store, _linker) =
-        TvmBuilder::new().with_raw_imports().build()?;
+    let (_engine, _store, _linker) = TvmBuilder::new().with_raw_imports().build()?;
     Ok(())
 }
 
@@ -66,13 +69,25 @@ fn build_imported_setup_with_data_round_trip() -> wasmtime::Result<()> {
     assert_eq!(handles.len(), 2);
 
     // Verify pre-loaded payloads via direct memory inspection.
-    let r0_mem = store.data().imported_region(handles[0].region_id).unwrap().memory();
+    let r0_mem = store
+        .data()
+        .imported_region(handles[0].region_id)
+        .unwrap()
+        .memory();
     let mut buf = [0u8; 4];
-    r0_mem.read(&store, handles[0].offset as usize, &mut buf).unwrap();
+    r0_mem
+        .read(&store, handles[0].offset as usize, &mut buf)
+        .unwrap();
     assert_eq!(&buf, b"abcd");
 
-    let r1_mem = store.data().imported_region(handles[1].region_id).unwrap().memory();
-    r1_mem.read(&store, handles[1].offset as usize, &mut buf).unwrap();
+    let r1_mem = store
+        .data()
+        .imported_region(handles[1].region_id)
+        .unwrap()
+        .memory();
+    r1_mem
+        .read(&store, handles[1].offset as usize, &mut buf)
+        .unwrap();
     assert_eq!(&buf, b"efgh");
     Ok(())
 }

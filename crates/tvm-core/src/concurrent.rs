@@ -70,12 +70,7 @@ impl<M: MemoryRegion + Send> ConcurrentDirectory<M> {
         }
     }
 
-    pub fn create_region(
-        &self,
-        kind: RegionKind,
-        capacity: u32,
-        memory: M,
-    ) -> Result<u16> {
+    pub fn create_region(&self, kind: RegionKind, capacity: u32, memory: M) -> Result<u16> {
         self.create_region_with(kind, capacity, AllocatorKind::Bump, memory)
     }
 
@@ -270,10 +265,8 @@ impl<M: MemoryRegion + Send> ConcurrentDirectory<M> {
 
     pub fn list_regions(&self) -> Result<Vec<Region>> {
         let regions = self.regions.read().map_err(|_| poisoned())?;
-        let arcs: Vec<SharedEntry<M>> = regions
-            .iter()
-            .filter_map(|s| s.as_ref().cloned())
-            .collect();
+        let arcs: Vec<SharedEntry<M>> =
+            regions.iter().filter_map(|s| s.as_ref().cloned()).collect();
         drop(regions);
         let mut out = Vec::with_capacity(arcs.len());
         for arc in arcs {
@@ -300,11 +293,7 @@ impl<M: MemoryRegion + Send> ConcurrentDirectory<M> {
         Ok(())
     }
 
-    pub fn spill_region<B: BackingStore>(
-        &self,
-        region_id: u16,
-        store: &mut B,
-    ) -> Result<()> {
+    pub fn spill_region<B: BackingStore>(&self, region_id: u16, store: &mut B) -> Result<()> {
         let entry_arc = self.entry_arc(region_id)?;
         let mut entry = entry_arc.lock().map_err(|_| poisoned())?;
         if entry.meta.pinned {
@@ -375,11 +364,7 @@ impl<M: MemoryRegion + Send> ConcurrentDirectory<M> {
         })
     }
 
-    pub fn load_region<B: BackingStore>(
-        &self,
-        region_id: u16,
-        store: &mut B,
-    ) -> Result<()>
+    pub fn load_region<B: BackingStore>(&self, region_id: u16, store: &mut B) -> Result<()>
     where
         M: MemoryRegion,
     {
@@ -418,11 +403,7 @@ impl<M: MemoryRegion + Send> ConcurrentDirectory<M> {
     }
 }
 
-fn check_in_bounds<M>(
-    entry: &RegionEntry<M>,
-    offset: u32,
-    len: u32,
-) -> Result<()> {
+fn check_in_bounds<M>(entry: &RegionEntry<M>, offset: u32, len: u32) -> Result<()> {
     let end = offset.checked_add(len).ok_or(TvmError::OutOfBounds)?;
     if end > entry.meta.capacity {
         return Err(TvmError::OutOfBounds);

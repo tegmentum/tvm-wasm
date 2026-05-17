@@ -44,11 +44,7 @@ impl RegionDirectory<VecBackedRegion> {
 
     /// Same as `region_slice_at` but mutable. The slice is valid as long
     /// as the directory isn't mutated.
-    pub fn region_slice_mut_at(
-        &mut self,
-        handle: Handle,
-        len: u32,
-    ) -> Result<&mut [u8]> {
+    pub fn region_slice_mut_at(&mut self, handle: Handle, len: u32) -> Result<&mut [u8]> {
         let entry = self.validate_mut(handle)?;
         let start = handle.offset as usize;
         let end = start

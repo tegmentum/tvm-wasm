@@ -38,8 +38,7 @@ fn build_fast_path_guest() -> anyhow::Result<Vec<u8>> {
     if !status.success() {
         anyhow::bail!("guest cargo build failed");
     }
-    let wasm = guest_dir
-        .join("target/wasm32-unknown-unknown/release/tvm_guest_fast_path.wasm");
+    let wasm = guest_dir.join("target/wasm32-unknown-unknown/release/tvm_guest_fast_path.wasm");
     Ok(std::fs::read(wasm)?)
 }
 

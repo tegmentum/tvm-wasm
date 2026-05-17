@@ -2,9 +2,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use tvm_core::external::ExternalLoader;
-use tvm_core::{
-    Handle, RegionDirectory, RegionKind, Residency, TvmError, VecBackedRegion,
-};
+use tvm_core::{Handle, RegionDirectory, RegionKind, Residency, TvmError, VecBackedRegion};
 
 #[test]
 fn mark_external_drops_memory() {
@@ -40,7 +38,11 @@ fn external_loader_invoked_on_load() {
     assert_eq!(calls.load(Ordering::Relaxed), 1);
     assert_eq!(dir.region_info(r).unwrap().residency, Residency::Hot);
 
-    let h = Handle { region_id: r, generation: 1, offset: 0 };
+    let h = Handle {
+        region_id: r,
+        generation: 1,
+        offset: 0,
+    };
     let mut buf = [0u8; 4];
     dir.read(h, &mut buf).unwrap();
     assert_eq!(&buf, b"REMT");

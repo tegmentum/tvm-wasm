@@ -18,7 +18,9 @@ pub struct SharedDirectory<M: MemoryRegion + Send + Sync> {
 
 impl<M: MemoryRegion + Send + Sync> Clone for SharedDirectory<M> {
     fn clone(&self) -> Self {
-        Self { inner: Arc::clone(&self.inner) }
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
     }
 }
 
@@ -30,15 +32,12 @@ impl<M: MemoryRegion + Send + Sync> Default for SharedDirectory<M> {
 
 impl<M: MemoryRegion + Send + Sync> SharedDirectory<M> {
     pub fn new() -> Self {
-        Self { inner: Arc::new(RwLock::new(RegionDirectory::new())) }
+        Self {
+            inner: Arc::new(RwLock::new(RegionDirectory::new())),
+        }
     }
 
-    pub fn create_region(
-        &self,
-        kind: RegionKind,
-        capacity: u32,
-        memory: M,
-    ) -> Result<u16> {
+    pub fn create_region(&self, kind: RegionKind, capacity: u32, memory: M) -> Result<u16> {
         self.with_write(|d| d.create_region(kind, capacity, memory))
     }
 
@@ -76,19 +75,11 @@ impl<M: MemoryRegion + Send + Sync> SharedDirectory<M> {
         self.with_write(|d| d.unpin(region_id))
     }
 
-    pub fn spill_region<B: BackingStore>(
-        &self,
-        region_id: u16,
-        store: &mut B,
-    ) -> Result<()> {
+    pub fn spill_region<B: BackingStore>(&self, region_id: u16, store: &mut B) -> Result<()> {
         self.with_write(|d| d.spill_region(region_id, store))
     }
 
-    pub fn load_region<B: BackingStore>(
-        &self,
-        region_id: u16,
-        store: &mut B,
-    ) -> Result<()> {
+    pub fn load_region<B: BackingStore>(&self, region_id: u16, store: &mut B) -> Result<()> {
         self.with_write(|d| d.load_region(region_id, store))
     }
 

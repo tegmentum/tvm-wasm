@@ -26,8 +26,7 @@ fn wasmtime_memory_round_trips_through_backing_store() -> anyhow::Result<()> {
     drop(region);
 
     // Stage 2: load into a freshly minted region.
-    let restored: WasmtimeMemoryRegion =
-        load_runtime_region(&mut store, &mut backing, 7, 1)?;
+    let restored: WasmtimeMemoryRegion = load_runtime_region(&mut store, &mut backing, 7, 1)?;
 
     let mut buf = [0u8; 16];
     restored.read(&store, 0, &mut buf)?;

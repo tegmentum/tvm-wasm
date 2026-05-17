@@ -956,7 +956,10 @@ mod tests {
             let body = emit_load_dispatcher("tvm_load_u8", "i32.load8_u", "i32", n);
             let module = wrap(n, &body);
             wat::parse_str(&module).unwrap_or_else(|e| {
-                panic!("n_pools={} failed to parse: {}\n--- module ---\n{}", n, e, module)
+                panic!(
+                    "n_pools={} failed to parse: {}\n--- module ---\n{}",
+                    n, e, module
+                )
             });
         }
     }
@@ -1014,9 +1017,8 @@ mod tests {
         for n in [1u32, 2, 4, 16, 64] {
             let mut body = emit_specialized_typed_helpers(n);
             body.push_str(&emit_indirect_load_dispatchers(n));
-            wat::parse_str(&wrap(n, &body)).unwrap_or_else(|e| {
-                panic!("indirect dispatchers n={} failed to parse: {}", n, e)
-            });
+            wat::parse_str(&wrap(n, &body))
+                .unwrap_or_else(|e| panic!("indirect dispatchers n={} failed to parse: {}", n, e));
         }
     }
 
@@ -1041,8 +1043,12 @@ mod tests {
         for n in [1u32, 2, 4, 8] {
             let body = emit_specialized_simd_reducers(n);
             wat::parse_str(&wrap(n, &body)).unwrap_or_else(|e| {
-                panic!("simd reducers n={} failed to parse: {}\n--- module ---\n{}",
-                    n, e, wrap(n, &body))
+                panic!(
+                    "simd reducers n={} failed to parse: {}\n--- module ---\n{}",
+                    n,
+                    e,
+                    wrap(n, &body)
+                )
             });
         }
     }

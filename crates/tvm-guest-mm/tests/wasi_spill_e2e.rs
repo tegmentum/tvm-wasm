@@ -40,8 +40,7 @@ fn wasi_spill_module_has_required_exports() -> anyhow::Result<()> {
     let module = Module::new(&engine, &wat)?;
 
     // Verify the module exports both spill helpers.
-    let exports: Vec<String> =
-        module.exports().map(|e| e.name().to_string()).collect();
+    let exports: Vec<String> = module.exports().map(|e| e.name().to_string()).collect();
     assert!(exports.iter().any(|e| e == "tvm_spill_to_fd"));
     assert!(exports.iter().any(|e| e == "tvm_load_from_fd"));
 

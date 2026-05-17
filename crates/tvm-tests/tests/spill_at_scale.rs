@@ -35,11 +35,16 @@ const CYCLES: u32 = 4;
 /// region B's id) is detectable byte-for-byte.
 fn pattern_byte(region_id: u16, offset: u32) -> u8 {
     let r = region_id as u32;
-    ((r.wrapping_mul(0x9E37_79B1)).wrapping_add(offset).wrapping_mul(0x85EB_CA77) >> 24) as u8
+    ((r.wrapping_mul(0x9E37_79B1))
+        .wrapping_add(offset)
+        .wrapping_mul(0x85EB_CA77)
+        >> 24) as u8
 }
 
 fn fill_pattern(region_id: u16) -> Vec<u8> {
-    (0..REGION_BYTES).map(|off| pattern_byte(region_id, off)).collect()
+    (0..REGION_BYTES)
+        .map(|off| pattern_byte(region_id, off))
+        .collect()
 }
 
 #[test]

@@ -80,10 +80,7 @@ fn make_engine() -> anyhow::Result<Engine> {
     Ok(Engine::new(&imported_region_engine_config())?)
 }
 
-fn wire_imports(
-    engine: &Engine,
-    store: &mut Store<TvmHost>,
-) -> anyhow::Result<Linker<TvmHost>> {
+fn wire_imports(engine: &Engine, store: &mut Store<TvmHost>) -> anyhow::Result<Linker<TvmHost>> {
     let imports: Vec<_> = store
         .data()
         .imported

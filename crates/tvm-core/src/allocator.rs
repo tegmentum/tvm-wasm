@@ -10,7 +10,9 @@ pub enum AllocatorKind {
     /// `class_size` bytes; `dealloc` recycles the slot for the next `alloc`.
     /// Region capacity should be a multiple of `class_size`; the trailing
     /// partial slot (if any) is wasted.
-    Slab { class_size: u32 },
+    Slab {
+        class_size: u32,
+    },
 }
 
 pub enum RegionAllocator {
@@ -60,7 +62,10 @@ impl RegionAllocator {
         match self {
             Self::Bump(_) => None,
             Self::Freelist(a) => Some(
-                a.allocated.iter().map(|(off, size)| (*off, *size)).collect(),
+                a.allocated
+                    .iter()
+                    .map(|(off, size)| (*off, *size))
+                    .collect(),
             ),
             // Slab allocations are uniform; compaction would still pack live
             // slots toward 0, but doing so is rarely useful (no fragmentation
@@ -95,7 +100,9 @@ impl BumpAllocator {
 
     pub fn alloc(&mut self, size: u32, align: u32) -> Result<u32> {
         let aligned = align_up(self.used, align).ok_or(TvmError::AllocationFailed)?;
-        let end = aligned.checked_add(size).ok_or(TvmError::AllocationFailed)?;
+        let end = aligned
+            .checked_add(size)
+            .ok_or(TvmError::AllocationFailed)?;
         if end > self.capacity {
             return Err(TvmError::AllocationFailed);
         }
@@ -165,7 +172,10 @@ impl FreelistAllocator {
     }
 
     pub fn dealloc(&mut self, offset: u32) -> Result<u32> {
-        let size = self.allocated.remove(&offset).ok_or(TvmError::OutOfBounds)?;
+        let size = self
+            .allocated
+            .remove(&offset)
+            .ok_or(TvmError::OutOfBounds)?;
         self.used -= size;
         // Insert sorted, then coalesce with neighbors.
         let pos = self.free.partition_point(|(o, _)| *o < offset);
@@ -227,10 +237,20 @@ pub struct SlabAllocator {
 
 impl SlabAllocator {
     pub fn new(capacity: u32, class_size: u32) -> Self {
-        let n_slots = if class_size == 0 { 0 } else { capacity / class_size };
+        let n_slots = if class_size == 0 {
+            0
+        } else {
+            capacity / class_size
+        };
         // Push slots in reverse so `pop()` hands out offset 0 first.
         let free_slots: Vec<u32> = (0..n_slots).rev().map(|i| i * class_size).collect();
-        Self { capacity, class_size, free_slots, n_slots, used: 0 }
+        Self {
+            capacity,
+            class_size,
+            free_slots,
+            n_slots,
+            used: 0,
+        }
     }
 
     pub fn used(&self) -> u32 {
@@ -323,7 +343,7 @@ mod tests {
         a.dealloc(x).unwrap();
         a.dealloc(z).unwrap();
         a.dealloc(y).unwrap(); // middle frees → should coalesce all three
-        // After full coalesce, single 64-byte alloc must succeed.
+                               // After full coalesce, single 64-byte alloc must succeed.
         let big = a.alloc(64, 1).unwrap();
         assert_eq!(big, 0);
     }

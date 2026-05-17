@@ -1,12 +1,12 @@
-use tvm_core::{
-    debug, Handle, HandleStatus, RegionDirectory, RegionKind, VecBackedRegion,
-};
+use tvm_core::{debug, Handle, HandleStatus, RegionDirectory, RegionKind, VecBackedRegion};
 
 #[test]
 fn dump_layout_lists_all_regions() {
     let mut dir: RegionDirectory<VecBackedRegion> = RegionDirectory::new();
-    dir.create_region(RegionKind::HotHeap, 64, VecBackedRegion::new(64)).unwrap();
-    dir.create_region(RegionKind::BlobArena, 32, VecBackedRegion::new(32)).unwrap();
+    dir.create_region(RegionKind::HotHeap, 64, VecBackedRegion::new(64))
+        .unwrap();
+    dir.create_region(RegionKind::BlobArena, 32, VecBackedRegion::new(32))
+        .unwrap();
 
     let dump = debug::dump_region_layout(&dir);
     assert!(dump.contains("HotHeap"));
@@ -24,13 +24,31 @@ fn validate_handle_classifies_each_state() {
 
     assert_eq!(debug::validate_handle(&dir, h), HandleStatus::Valid);
 
-    let unknown = Handle { region_id: 99, generation: 1, offset: 0 };
-    assert_eq!(debug::validate_handle(&dir, unknown), HandleStatus::UnknownRegion);
+    let unknown = Handle {
+        region_id: 99,
+        generation: 1,
+        offset: 0,
+    };
+    assert_eq!(
+        debug::validate_handle(&dir, unknown),
+        HandleStatus::UnknownRegion
+    );
 
-    let stale = Handle { region_id: r, generation: 99, offset: 0 };
-    assert_eq!(debug::validate_handle(&dir, stale), HandleStatus::StaleGeneration);
+    let stale = Handle {
+        region_id: r,
+        generation: 99,
+        offset: 0,
+    };
+    assert_eq!(
+        debug::validate_handle(&dir, stale),
+        HandleStatus::StaleGeneration
+    );
 
-    let oob = Handle { region_id: r, generation: 1, offset: 999 };
+    let oob = Handle {
+        region_id: r,
+        generation: 1,
+        offset: 999,
+    };
     assert_eq!(debug::validate_handle(&dir, oob), HandleStatus::OutOfBounds);
 }
 
@@ -41,7 +59,11 @@ fn validate_handles_batch_produces_pairs() {
         .create_region(RegionKind::HotHeap, 32, VecBackedRegion::new(32))
         .unwrap();
     let h1 = dir.alloc(r, 4).unwrap();
-    let h2 = Handle { region_id: r, generation: 99, offset: 0 };
+    let h2 = Handle {
+        region_id: r,
+        generation: 99,
+        offset: 0,
+    };
 
     let result = debug::validate_handles(&dir, &[h1, h2]);
     assert_eq!(result.len(), 2);

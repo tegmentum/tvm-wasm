@@ -69,9 +69,8 @@
 //!   via plain function calls.
 
 pub use tvm_core::{
-    AllocatorKind, BumpAllocator, FreelistAllocator, Handle, PlacementPolicy,
-    RegionAllocator, RegionKind, Residency, Result, SlabAllocator, TvmError,
-    TvmFacade, TvmSpill,
+    AllocatorKind, BumpAllocator, FreelistAllocator, Handle, PlacementPolicy, RegionAllocator,
+    RegionKind, Residency, Result, SlabAllocator, TvmError, TvmFacade, TvmSpill,
 };
 
 mod directory;

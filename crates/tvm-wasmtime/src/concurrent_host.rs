@@ -18,16 +18,16 @@ use std::sync::{Arc, Mutex};
 
 use tvm_core::{
     AllocatorKind, ConcurrentDirectory, FileBackingStore, Handle as CoreHandle,
-    RegionKind as CoreRegionKind, Residency as CoreResidency, ResolveCache,
-    TvmError as CoreError, VecBackedRegion,
+    RegionKind as CoreRegionKind, Residency as CoreResidency, ResolveCache, TvmError as CoreError,
+    VecBackedRegion,
 };
 
 use crate::bindings::tvm::memory::bytes::Host as BytesHost;
 use crate::bindings::tvm::memory::diagnostics::Host as DiagnosticsHost;
 use crate::bindings::tvm::memory::manager::Host as ManagerHost;
 use crate::bindings::tvm::memory::types::{
-    CompactResult, Handle, Host as TypesHost, RegionInfo, RegionKind, RegionMetrics,
-    Residency, TvmError,
+    CompactResult, Handle, Host as TypesHost, RegionInfo, RegionKind, RegionMetrics, Residency,
+    TvmError,
 };
 
 #[derive(Clone)]
@@ -60,9 +60,7 @@ impl ConcurrentTvmHost {
         }
     }
 
-    pub fn with_backing(
-        path: impl AsRef<std::path::Path>,
-    ) -> Result<Self, CoreError> {
+    pub fn with_backing(path: impl AsRef<std::path::Path>) -> Result<Self, CoreError> {
         let host = Self::new();
         let backing = FileBackingStore::new(path.as_ref().to_path_buf())?;
         *host.inner.backing.lock().unwrap() = Some(backing);
@@ -97,9 +95,7 @@ fn err(e: CoreError) -> TvmError {
         CoreError::UnsupportedAllocator => {
             TvmError::BackingStore("unsupported by allocator".into())
         }
-        CoreError::PolicyViolation => {
-            TvmError::BackingStore("forbidden by region policy".into())
-        }
+        CoreError::PolicyViolation => TvmError::BackingStore("forbidden by region policy".into()),
     }
 }
 
@@ -137,11 +133,19 @@ fn from_core_residency(r: CoreResidency) -> Residency {
 }
 
 fn to_core_handle(h: Handle) -> CoreHandle {
-    CoreHandle { region_id: h.region_id, generation: h.generation, offset: h.offset }
+    CoreHandle {
+        region_id: h.region_id,
+        generation: h.generation,
+        offset: h.offset,
+    }
 }
 
 fn to_wit_handle(h: CoreHandle) -> Handle {
-    Handle { region_id: h.region_id, generation: h.generation, offset: h.offset }
+    Handle {
+        region_id: h.region_id,
+        generation: h.generation,
+        offset: h.offset,
+    }
 }
 
 impl TypesHost for ConcurrentTvmHost {}
@@ -174,7 +178,10 @@ impl ManagerHost for ConcurrentTvmHost {
     }
 
     fn dealloc(&mut self, ptr: Handle) -> Result<(), TvmError> {
-        self.inner.directory.dealloc(to_core_handle(ptr)).map_err(err)
+        self.inner
+            .directory
+            .dealloc(to_core_handle(ptr))
+            .map_err(err)
     }
 
     fn describe_region(&mut self, region_id: u16) -> Result<RegionInfo, TvmError> {
@@ -196,7 +203,10 @@ impl ManagerHost for ConcurrentTvmHost {
         let backing = backing_guard
             .as_mut()
             .ok_or_else(|| TvmError::BackingStore("no backing store configured".into()))?;
-        self.inner.directory.load_region(region_id, backing).map_err(err)
+        self.inner
+            .directory
+            .load_region(region_id, backing)
+            .map_err(err)
     }
 
     fn demote_region(&mut self, region_id: u16) -> Result<(), TvmError> {
@@ -205,7 +215,10 @@ impl ManagerHost for ConcurrentTvmHost {
         let backing = backing_guard
             .as_mut()
             .ok_or_else(|| TvmError::BackingStore("no backing store configured".into()))?;
-        self.inner.directory.spill_region(region_id, backing).map_err(err)
+        self.inner
+            .directory
+            .spill_region(region_id, backing)
+            .map_err(err)
     }
 
     fn spill_region(&mut self, region_id: u16) -> Result<(), TvmError> {
@@ -214,7 +227,10 @@ impl ManagerHost for ConcurrentTvmHost {
         let backing = backing_guard
             .as_mut()
             .ok_or_else(|| TvmError::BackingStore("no backing store configured".into()))?;
-        self.inner.directory.spill_region(region_id, backing).map_err(err)
+        self.inner
+            .directory
+            .spill_region(region_id, backing)
+            .map_err(err)
     }
 
     fn load_region(&mut self, region_id: u16) -> Result<(), TvmError> {
@@ -223,7 +239,10 @@ impl ManagerHost for ConcurrentTvmHost {
         let backing = backing_guard
             .as_mut()
             .ok_or_else(|| TvmError::BackingStore("no backing store configured".into()))?;
-        self.inner.directory.load_region(region_id, backing).map_err(err)
+        self.inner
+            .directory
+            .load_region(region_id, backing)
+            .map_err(err)
     }
 
     fn pin(&mut self, region_id: u16) -> Result<(), TvmError> {
@@ -236,7 +255,11 @@ impl ManagerHost for ConcurrentTvmHost {
 
     fn compact_region(&mut self, region_id: u16) -> Result<CompactResult, TvmError> {
         self.inner.cache.lock().unwrap().invalidate(region_id);
-        let remap = self.inner.directory.compact_region(region_id).map_err(err)?;
+        let remap = self
+            .inner
+            .directory
+            .compact_region(region_id)
+            .map_err(err)?;
         let mut mapping: Vec<(u32, u32)> = remap.mapping.into_iter().collect();
         mapping.sort_by_key(|p| p.0);
         Ok(CompactResult {
@@ -250,12 +273,18 @@ impl ManagerHost for ConcurrentTvmHost {
 impl BytesHost for ConcurrentTvmHost {
     fn read(&mut self, ptr: Handle, len: u32) -> Result<Vec<u8>, TvmError> {
         let mut buf = vec![0u8; len as usize];
-        self.inner.directory.read(to_core_handle(ptr), &mut buf).map_err(err)?;
+        self.inner
+            .directory
+            .read(to_core_handle(ptr), &mut buf)
+            .map_err(err)?;
         Ok(buf)
     }
 
     fn write(&mut self, ptr: Handle, data: Vec<u8>) -> Result<(), TvmError> {
-        self.inner.directory.write(to_core_handle(ptr), &data).map_err(err)
+        self.inner
+            .directory
+            .write(to_core_handle(ptr), &data)
+            .map_err(err)
     }
 
     fn copy(&mut self, src: Handle, dst: Handle, len: u32) -> Result<(), TvmError> {
@@ -357,7 +386,11 @@ impl DiagnosticsHost for ConcurrentTvmHost {
     }
 
     fn metrics_snapshot(&mut self, region_id: u16) -> Result<RegionMetrics, TvmError> {
-        let snap = self.inner.directory.metrics_snapshot(region_id).map_err(err)?;
+        let snap = self
+            .inner
+            .directory
+            .metrics_snapshot(region_id)
+            .map_err(err)?;
         Ok(RegionMetrics {
             allocations: snap.allocations,
             bytes_allocated: snap.bytes_allocated,

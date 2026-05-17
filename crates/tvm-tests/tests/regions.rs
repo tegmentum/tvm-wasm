@@ -37,5 +37,8 @@ fn out_of_bounds_write_rejected() {
 #[test]
 fn destroy_unknown_region_errors() {
     let mut dir: RegionDirectory<VecBackedRegion> = RegionDirectory::new();
-    assert!(matches!(dir.destroy_region(7), Err(TvmError::RegionNotFound(7))));
+    assert!(matches!(
+        dir.destroy_region(7),
+        Err(TvmError::RegionNotFound(7))
+    ));
 }

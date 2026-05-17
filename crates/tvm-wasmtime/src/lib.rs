@@ -54,20 +54,17 @@ pub mod runtime_persist;
 pub mod shared_host;
 
 pub use builder::TvmBuilder;
-pub use engine_config::{
-    imported_region_engine_config, pooling_imported_region_engine_config,
-};
+pub use concurrent_host::ConcurrentTvmHost;
+pub use engine_config::{imported_region_engine_config, pooling_imported_region_engine_config};
 pub use host::TvmHost;
 pub use imported::{
-    build_imported_setup, build_imported_setup_with_data, create_imported_in_store,
-    ImportedRegion,
+    build_imported_setup, build_imported_setup_with_data, create_imported_in_store, ImportedRegion,
 };
 pub use linker::{
     add_concurrent_to_linker, add_shared_to_linker, add_to_linker, add_to_linker_with,
 };
-pub use raw_linker::{add_raw_imports, add_raw_imports_with_memory_name};
-pub use runtime_persist::{load_runtime_region, spill_runtime_region};
-pub use concurrent_host::ConcurrentTvmHost;
-pub use shared_host::SharedTvmHost;
 pub use memory_factory::{RuntimeMemoryRegion, WasmtimeMemoryRegion, WASM_PAGE_SIZE};
+pub use raw_linker::{add_raw_imports, add_raw_imports_with_memory_name};
 pub use region_view::RegionView;
+pub use runtime_persist::{load_runtime_region, spill_runtime_region};
+pub use shared_host::SharedTvmHost;

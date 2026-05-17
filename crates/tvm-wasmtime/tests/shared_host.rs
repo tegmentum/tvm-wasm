@@ -13,12 +13,8 @@ use wasmtime::{Config, Engine, Store};
 #[test]
 fn multiple_threads_share_directory() {
     let shared = SharedTvmHost::new();
-    let region = ManagerHost::create_region(
-        &mut *shared.lock(),
-        RegionKind::HotHeap,
-        4096,
-    )
-    .unwrap();
+    let region =
+        ManagerHost::create_region(&mut *shared.lock(), RegionKind::HotHeap, 4096).unwrap();
 
     let mut threads = Vec::new();
     for thread_id in 0..8u8 {
@@ -62,8 +58,7 @@ fn shared_host_via_linker_and_two_stores() -> anyhow::Result<()> {
 
     let shared = SharedTvmHost::new();
     // Pre-create a region from outside any store.
-    let region =
-        ManagerHost::create_region(&mut *shared.lock(), RegionKind::HotHeap, 256)?;
+    let region = ManagerHost::create_region(&mut *shared.lock(), RegionKind::HotHeap, 256)?;
 
     // Empty component: just verify linker registration succeeds and two
     // stores can hold clones of the same SharedTvmHost.

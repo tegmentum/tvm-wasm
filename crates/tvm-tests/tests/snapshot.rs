@@ -22,7 +22,11 @@ fn snapshot_then_restore_round_trip() {
     dir2.restore_region(r2, &path).unwrap();
 
     let mut buf = [0u8; 8];
-    let h2 = tvm_core::Handle { region_id: r2, generation: 1, offset: 0 };
+    let h2 = tvm_core::Handle {
+        region_id: r2,
+        generation: 1,
+        offset: 0,
+    };
     dir2.read(h2, &mut buf).unwrap();
     assert_eq!(&buf, b"abcdefgh");
 }
@@ -37,5 +41,8 @@ fn restore_rejects_oversized_file() {
     let r = dir
         .create_region(RegionKind::Scratch, 32, VecBackedRegion::new(32))
         .unwrap();
-    assert!(matches!(dir.restore_region(r, &path), Err(TvmError::OutOfBounds)));
+    assert!(matches!(
+        dir.restore_region(r, &path),
+        Err(TvmError::OutOfBounds)
+    ));
 }

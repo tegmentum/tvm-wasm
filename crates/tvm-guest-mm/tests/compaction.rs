@@ -4,9 +4,7 @@
 //! correctly via the returned `HandleRemap`.
 
 use std::sync::Mutex;
-use tvm_guest_mm::{
-    AllocatorKind, FnDispatch, GuestTvm, Pool, RegionKind, Result, TvmError,
-};
+use tvm_guest_mm::{AllocatorKind, FnDispatch, GuestTvm, Pool, RegionKind, Result, TvmError};
 
 // Stub backing for the test — one Vec<u8> per pool. The intra-pool
 // copy stub emulates `memory.copy K K` semantically (with overlap
@@ -23,7 +21,9 @@ fn stub_read(pool: u32, off: u32, dst: &mut [u8]) -> Result<()> {
     let p = &pools[pool as usize];
     let s = off as usize;
     let n = dst.len();
-    if s + n > p.len() { return Err(TvmError::OutOfBounds); }
+    if s + n > p.len() {
+        return Err(TvmError::OutOfBounds);
+    }
     dst.copy_from_slice(&p[s..s + n]);
     Ok(())
 }
@@ -33,7 +33,9 @@ fn stub_write(pool: u32, off: u32, src: &[u8]) -> Result<()> {
     let p = &mut pools[pool as usize];
     let s = off as usize;
     let n = src.len();
-    if s + n > p.len() { return Err(TvmError::OutOfBounds); }
+    if s + n > p.len() {
+        return Err(TvmError::OutOfBounds);
+    }
     p[s..s + n].copy_from_slice(src);
     Ok(())
 }
@@ -44,7 +46,9 @@ fn stub_intra_pool_copy(pool: u32, dst_off: u32, src_off: u32, len: u32) -> Resu
     let s = src_off as usize;
     let d = dst_off as usize;
     let n = len as usize;
-    if s + n > p.len() || d + n > p.len() { return Err(TvmError::OutOfBounds); }
+    if s + n > p.len() || d + n > p.len() {
+        return Err(TvmError::OutOfBounds);
+    }
     p.copy_within(s..s + n, d);
     Ok(())
 }
@@ -58,7 +62,11 @@ fn build(n_pools: usize, capacity: u32) -> GuestTvm {
     }
     drop(pools);
     let descs: Vec<Pool> = (0..n_pools as u32)
-        .map(|i| Pool { memory_index: i, used: 0, capacity })
+        .map(|i| Pool {
+            memory_index: i,
+            used: 0,
+            capacity,
+        })
         .collect();
     let mut g = GuestTvm::new(
         descs,
@@ -72,7 +80,8 @@ fn build(n_pools: usize, capacity: u32) -> GuestTvm {
 fn compaction_packs_live_blocks_and_migrates_handles() {
     let _guard = TEST_SERIAL.lock().unwrap();
     let mut g = build(2, 4096);
-    let r = g.directory_mut()
+    let r = g
+        .directory_mut()
         .create_region(RegionKind::HotHeap, 1024, AllocatorKind::Freelist)
         .unwrap();
 
@@ -137,7 +146,8 @@ fn compaction_packs_live_blocks_and_migrates_handles() {
 fn compaction_rejects_pinned_region() {
     let _guard = TEST_SERIAL.lock().unwrap();
     let mut g = build(1, 4096);
-    let r = g.directory_mut()
+    let r = g
+        .directory_mut()
         .create_region(RegionKind::HotHeap, 512, AllocatorKind::Freelist)
         .unwrap();
     g.directory_mut().alloc(r, 64).unwrap();
@@ -154,7 +164,8 @@ fn resolve_cache_invalidates_on_compaction() {
     // resolve to the OLD pool/base for the new generation — wrong.
     use tvm_core::TvmFacade;
     let mut g = build(1, 4096);
-    let r = g.directory_mut()
+    let r = g
+        .directory_mut()
         .create_region(RegionKind::HotHeap, 1024, AllocatorKind::Freelist)
         .unwrap();
     let h_a = g.directory_mut().alloc(r, 64).unwrap();
@@ -178,7 +189,10 @@ fn resolve_cache_invalidates_on_compaction() {
     // bytes (bad).
     let mut buf2 = [0u8; 32];
     g.read(h_b_new, &mut buf2).unwrap();
-    assert!(buf2.iter().all(|&x| x == 0xbb), "post-compact read must work");
+    assert!(
+        buf2.iter().all(|&x| x == 0xbb),
+        "post-compact read must work"
+    );
 
     // The pre-compact handle must STILL fail (stale generation), not
     // be silently served by the cache.
@@ -189,9 +203,13 @@ fn resolve_cache_invalidates_on_compaction() {
 fn compaction_rejects_bump_allocator() {
     let _guard = TEST_SERIAL.lock().unwrap();
     let mut g = build(1, 4096);
-    let r = g.directory_mut()
+    let r = g
+        .directory_mut()
         .create_region(RegionKind::HotHeap, 512, AllocatorKind::Bump)
         .unwrap();
     g.directory_mut().alloc(r, 64).unwrap();
-    assert!(matches!(g.compact_region(r), Err(TvmError::UnsupportedAllocator)));
+    assert!(matches!(
+        g.compact_region(r),
+        Err(TvmError::UnsupportedAllocator)
+    ));
 }

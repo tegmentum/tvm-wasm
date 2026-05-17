@@ -4,10 +4,9 @@
 
 use crate::dispatch::{
     emit_bulk_copy_dispatcher, emit_bulk_copy_from_default_dispatcher,
-    emit_indirect_load_dispatchers, emit_load_dispatcher,
-    emit_specialized_copy_helpers, emit_specialized_intra_pool_copy,
-    emit_specialized_simd_kernels, emit_specialized_simd_reducers,
-    emit_specialized_typed_helpers, emit_store_dispatcher,
+    emit_indirect_load_dispatchers, emit_load_dispatcher, emit_specialized_copy_helpers,
+    emit_specialized_intra_pool_copy, emit_specialized_simd_kernels,
+    emit_specialized_simd_reducers, emit_specialized_typed_helpers, emit_store_dispatcher,
 };
 
 #[derive(Clone, Debug)]
@@ -56,14 +55,44 @@ pub fn tvm_guest_mm_module_template(p: &ModuleParams) -> String {
     s.push('\n');
 
     // Load dispatchers.
-    s.push_str(&emit_load_dispatcher("tvm_load_u8", "i32.load8_u", "i32", p.n_pools));
-    s.push_str(&emit_load_dispatcher("tvm_load_u32", "i32.load", "i32", p.n_pools));
-    s.push_str(&emit_load_dispatcher("tvm_load_i64", "i64.load", "i64", p.n_pools));
+    s.push_str(&emit_load_dispatcher(
+        "tvm_load_u8",
+        "i32.load8_u",
+        "i32",
+        p.n_pools,
+    ));
+    s.push_str(&emit_load_dispatcher(
+        "tvm_load_u32",
+        "i32.load",
+        "i32",
+        p.n_pools,
+    ));
+    s.push_str(&emit_load_dispatcher(
+        "tvm_load_i64",
+        "i64.load",
+        "i64",
+        p.n_pools,
+    ));
 
     // Store dispatchers.
-    s.push_str(&emit_store_dispatcher("tvm_store_u8", "i32.store8", "i32", p.n_pools));
-    s.push_str(&emit_store_dispatcher("tvm_store_u32", "i32.store", "i32", p.n_pools));
-    s.push_str(&emit_store_dispatcher("tvm_store_i64", "i64.store", "i64", p.n_pools));
+    s.push_str(&emit_store_dispatcher(
+        "tvm_store_u8",
+        "i32.store8",
+        "i32",
+        p.n_pools,
+    ));
+    s.push_str(&emit_store_dispatcher(
+        "tvm_store_u32",
+        "i32.store",
+        "i32",
+        p.n_pools,
+    ));
+    s.push_str(&emit_store_dispatcher(
+        "tvm_store_i64",
+        "i64.store",
+        "i64",
+        p.n_pools,
+    ));
 
     // Bulk-copy dispatchers — one dispatch per len bytes, the right
     // idiom for sequential / range workloads.

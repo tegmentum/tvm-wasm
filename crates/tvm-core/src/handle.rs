@@ -64,9 +64,7 @@ impl Handle {
     }
 
     pub const fn pack(self) -> u64 {
-        ((self.region_id as u64) << 48)
-            | ((self.generation as u64) << 32)
-            | (self.offset as u64)
+        ((self.region_id as u64) << 48) | ((self.generation as u64) << 32) | (self.offset as u64)
     }
 
     pub const fn unpack(packed: u64) -> Self {
@@ -84,7 +82,11 @@ mod tests {
 
     #[test]
     fn pack_roundtrip() {
-        let h = Handle { region_id: 7, generation: 42, offset: 0xDEAD_BEEF };
+        let h = Handle {
+            region_id: 7,
+            generation: 42,
+            offset: 0xDEAD_BEEF,
+        };
         assert_eq!(Handle::unpack(h.pack()), h);
     }
 

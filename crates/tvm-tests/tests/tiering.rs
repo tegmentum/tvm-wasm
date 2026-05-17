@@ -5,7 +5,11 @@ use tvm_core::{
     VecBackedRegion,
 };
 
-fn dir_with_backing() -> (RegionDirectory<VecBackedRegion>, FileBackingStore, tempfile::TempDir) {
+fn dir_with_backing() -> (
+    RegionDirectory<VecBackedRegion>,
+    FileBackingStore,
+    tempfile::TempDir,
+) {
     let tmp = tempdir().unwrap();
     let backing = FileBackingStore::new(tmp.path()).unwrap();
     (RegionDirectory::new(), backing, tmp)
@@ -19,10 +23,7 @@ fn flexible_policy() -> PlacementPolicy {
     }
 }
 
-fn create_flexible(
-    dir: &mut RegionDirectory<VecBackedRegion>,
-    capacity: u32,
-) -> u16 {
+fn create_flexible(dir: &mut RegionDirectory<VecBackedRegion>, capacity: u32) -> u16 {
     dir.create_region_with_policy(
         RegionKind::ObjectArena,
         capacity,
@@ -111,9 +112,15 @@ fn write_or_fault_auto_loads_cold_region() {
 #[test]
 fn evict_warm_region_picks_oldest() {
     let (mut dir, mut backing, _tmp) = dir_with_backing();
-    let r0 = dir.create_region(RegionKind::ObjectArena, 16, VecBackedRegion::new(16)).unwrap();
-    let r1 = dir.create_region(RegionKind::ObjectArena, 16, VecBackedRegion::new(16)).unwrap();
-    let r2 = dir.create_region(RegionKind::ObjectArena, 16, VecBackedRegion::new(16)).unwrap();
+    let r0 = dir
+        .create_region(RegionKind::ObjectArena, 16, VecBackedRegion::new(16))
+        .unwrap();
+    let r1 = dir
+        .create_region(RegionKind::ObjectArena, 16, VecBackedRegion::new(16))
+        .unwrap();
+    let r2 = dir
+        .create_region(RegionKind::ObjectArena, 16, VecBackedRegion::new(16))
+        .unwrap();
 
     dir.demote_region(r0, &mut backing).unwrap(); // oldest in LRU back
     dir.demote_region(r1, &mut backing).unwrap();
@@ -148,7 +155,9 @@ fn evict_warm_region_returns_none_when_empty() {
 #[test]
 fn demote_pinned_region_errors() {
     let (mut dir, mut backing, _tmp) = dir_with_backing();
-    let r = dir.create_region(RegionKind::HotHeap, 16, VecBackedRegion::new(16)).unwrap();
+    let r = dir
+        .create_region(RegionKind::HotHeap, 16, VecBackedRegion::new(16))
+        .unwrap();
     dir.pin(r).unwrap();
     assert!(matches!(
         dir.demote_region(r, &mut backing),
@@ -159,7 +168,9 @@ fn demote_pinned_region_errors() {
 #[test]
 fn promote_hot_region_is_noop() {
     let (mut dir, mut backing, _tmp) = dir_with_backing();
-    let r = dir.create_region(RegionKind::HotHeap, 16, VecBackedRegion::new(16)).unwrap();
+    let r = dir
+        .create_region(RegionKind::HotHeap, 16, VecBackedRegion::new(16))
+        .unwrap();
     let before = dir.metrics(r).unwrap().snapshot();
     dir.promote_region(r, &mut backing).unwrap();
     let after = dir.metrics(r).unwrap().snapshot();

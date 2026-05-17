@@ -48,9 +48,9 @@ fn err_code(e: &TvmError) -> i32 {
         TvmError::NotResident => ERR_NOT_RESIDENT,
         TvmError::AllocationFailed => ERR_ALLOC_FAILED,
         TvmError::Pinned => ERR_PINNED,
-        TvmError::BackingStore(_)
-        | TvmError::UnsupportedAllocator
-        | TvmError::PolicyViolation => ERR_OTHER,
+        TvmError::BackingStore(_) | TvmError::UnsupportedAllocator | TvmError::PolicyViolation => {
+            ERR_OTHER
+        }
     }
 }
 
@@ -71,10 +71,7 @@ fn guest_memory_named<T>(caller: &mut Caller<'_, T>, name: &str) -> Option<Memor
 /// Cached fetch: populates `host.cached_memory` on first call, returns the
 /// stored handle on subsequent calls. Saves the per-call HashMap lookup
 /// inside `Caller::get_export`.
-fn cached_guest_memory<T>(
-    caller: &mut Caller<'_, T>,
-    name: &'static str,
-) -> Option<Memory>
+fn cached_guest_memory<T>(caller: &mut Caller<'_, T>, name: &'static str) -> Option<Memory>
 where
     T: AsMut<TvmHost>,
 {
@@ -172,20 +169,15 @@ where
                 Some(e) => e,
                 None => return ERR_GUEST_MEMORY,
             };
-            let (_mem, ptr, _size) = match cached_guest_memory_view(
-                &mut caller,
-                memory_name,
-                required_end,
-            ) {
-                Some(v) => v,
-                None => return ERR_GUEST_MEMORY,
-            };
+            let (_mem, ptr, _size) =
+                match cached_guest_memory_view(&mut caller, memory_name, required_end) {
+                    Some(v) => v,
+                    None => return ERR_GUEST_MEMORY,
+                };
             let host = caller.data_mut().as_mut();
             // SAFETY: ptr+required_end is bounds-checked against memory
             // size in the view fetch; fast_read checks the region side.
-            match unsafe {
-                host.fast_read(h, (ptr as *mut u8).add(dst_off), len as u32)
-            } {
+            match unsafe { host.fast_read(h, (ptr as *mut u8).add(dst_off), len as u32) } {
                 Ok(()) => ERR_OK,
                 Err(e) => err_code(&e),
             }
@@ -203,19 +195,14 @@ where
                 Some(e) => e,
                 None => return ERR_GUEST_MEMORY,
             };
-            let (_mem, ptr, _size) = match cached_guest_memory_view(
-                &mut caller,
-                memory_name,
-                required_end,
-            ) {
-                Some(v) => v,
-                None => return ERR_GUEST_MEMORY,
-            };
+            let (_mem, ptr, _size) =
+                match cached_guest_memory_view(&mut caller, memory_name, required_end) {
+                    Some(v) => v,
+                    None => return ERR_GUEST_MEMORY,
+                };
             let host = caller.data_mut().as_mut();
             // SAFETY: ptr+required_end is bounds-checked.
-            match unsafe {
-                host.fast_write(h, (ptr as *const u8).add(src_off), len as u32)
-            } {
+            match unsafe { host.fast_write(h, (ptr as *const u8).add(src_off), len as u32) } {
                 Ok(()) => ERR_OK,
                 Err(e) => err_code(&e),
             }
@@ -240,7 +227,10 @@ where
                 None => return ERR_GUEST_MEMORY,
             };
             let mut indices_bytes = vec![0u8; count_us * 4];
-            if mem.read(&caller, indices_ptr as usize, &mut indices_bytes).is_err() {
+            if mem
+                .read(&caller, indices_ptr as usize, &mut indices_bytes)
+                .is_err()
+            {
                 return ERR_GUEST_MEMORY;
             }
             // Decode indices.
@@ -259,8 +249,7 @@ where
             let dense_contiguous = if count_us >= 2 {
                 let stride = indices[1].wrapping_sub(indices[0]);
                 stride as usize == item
-                    && (1..count_us)
-                        .all(|k| indices[k].wrapping_sub(indices[k - 1]) == stride)
+                    && (1..count_us).all(|k| indices[k].wrapping_sub(indices[k - 1]) == stride)
             } else {
                 count_us == 1
             };
@@ -279,7 +268,10 @@ where
                 } else {
                     for i in 0..count_us {
                         let off = indices[i];
-                        let cell = Handle { offset: h.offset.wrapping_add(off), ..h };
+                        let cell = Handle {
+                            offset: h.offset.wrapping_add(off),
+                            ..h
+                        };
                         if let Err(e) = host
                             .directory
                             .read(cell, &mut scratch[i * item..(i + 1) * item])
@@ -321,14 +313,10 @@ where
         },
     )?;
 
-    linker.func_wrap(
-        "tvm",
-        "last_error",
-        |mut caller: Caller<'_, T>| -> i32 {
-            let host = caller.data_mut().as_mut();
-            std::mem::replace(&mut host.last_raw_error, ERR_OK)
-        },
-    )?;
+    linker.func_wrap("tvm", "last_error", |mut caller: Caller<'_, T>| -> i32 {
+        let host = caller.data_mut().as_mut();
+        std::mem::replace(&mut host.last_raw_error, ERR_OK)
+    })?;
 
     // ---- reducer imports: fold a region's bytes to a scalar ----
     //
@@ -506,7 +494,10 @@ where
             let host = caller.data_mut().as_mut();
             match host.region_and_fold_u8(h, len as u32) {
                 Ok(v) => v as i32,
-                Err(e) => { host.last_raw_error = err_code(&e); -1 }
+                Err(e) => {
+                    host.last_raw_error = err_code(&e);
+                    -1
+                }
             }
         },
     )?;
@@ -519,7 +510,10 @@ where
             let host = caller.data_mut().as_mut();
             match host.region_or_fold_u8(h, len as u32) {
                 Ok(v) => v as i32,
-                Err(e) => { host.last_raw_error = err_code(&e); -1 }
+                Err(e) => {
+                    host.last_raw_error = err_code(&e);
+                    -1
+                }
             }
         },
     )?;
@@ -532,7 +526,10 @@ where
             let host = caller.data_mut().as_mut();
             match host.region_xor_fold_u8(h, len as u32) {
                 Ok(v) => v as i32,
-                Err(e) => { host.last_raw_error = err_code(&e); -1 }
+                Err(e) => {
+                    host.last_raw_error = err_code(&e);
+                    -1
+                }
             }
         },
     )?;
@@ -540,16 +537,15 @@ where
     linker.func_wrap(
         "tvm",
         "count_in_range",
-        |mut caller: Caller<'_, T>,
-         packed: i64,
-         len: i32,
-         lo: i32,
-         hi: i32| -> i32 {
+        |mut caller: Caller<'_, T>, packed: i64, len: i32, lo: i32, hi: i32| -> i32 {
             let h = Handle::unpack(packed as u64);
             let host = caller.data_mut().as_mut();
             match host.region_count_in_range(h, len as u32, lo as u8, hi as u8) {
                 Ok(c) => c as i32,
-                Err(e) => { host.last_raw_error = err_code(&e); -1 }
+                Err(e) => {
+                    host.last_raw_error = err_code(&e);
+                    -1
+                }
             }
         },
     )?;
@@ -566,7 +562,10 @@ where
                 Ok(core::cmp::Ordering::Less) => -1,
                 Ok(core::cmp::Ordering::Equal) => 0,
                 Ok(core::cmp::Ordering::Greater) => 1,
-                Err(e) => { host.last_raw_error = err_code(&e); -2 }
+                Err(e) => {
+                    host.last_raw_error = err_code(&e);
+                    -2
+                }
             }
         },
     )?;
@@ -636,9 +635,7 @@ where
                 Some(e) => e,
                 None => return ERR_GUEST_MEMORY,
             };
-            let mem = match cached_guest_memory_view(
-                &mut caller, memory_name, required_end,
-            ) {
+            let mem = match cached_guest_memory_view(&mut caller, memory_name, required_end) {
                 Some((m, _, _)) => m,
                 None => return ERR_GUEST_MEMORY,
             };
@@ -671,9 +668,7 @@ where
                 Some(e) => e,
                 None => return ERR_GUEST_MEMORY,
             };
-            let mem = match cached_guest_memory_view(
-                &mut caller, memory_name, required_end,
-            ) {
+            let mem = match cached_guest_memory_view(&mut caller, memory_name, required_end) {
                 Some((m, _, _)) => m,
                 None => return ERR_GUEST_MEMORY,
             };

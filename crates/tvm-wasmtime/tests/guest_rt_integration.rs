@@ -117,7 +117,9 @@ fn setup_with_region(size: u32) -> Result<(Store<TvmHost>, i64)> {
     let host = TvmHost::new();
     let engine = Engine::new(&Config::new())?;
     let mut store = Store::new(&engine, host);
-    let r = store.data_mut().create_region(RegionKind::HotHeap, size + 256)?;
+    let r = store
+        .data_mut()
+        .create_region(RegionKind::HotHeap, size + 256)?;
     let h = store.data_mut().alloc(r, size)?;
     Ok((store, h.pack() as i64))
 }
@@ -131,7 +133,7 @@ fn typed_u8_round_trip() -> Result<()> {
     let inst = linker.instantiate(&mut store, &module)?;
 
     let store_u8 = inst.get_typed_func::<(i64, i32, i32), i32>(&mut store, "store_u8")?;
-    let load_u8  = inst.get_typed_func::<(i64, i32), i32>(&mut store, "load_u8")?;
+    let load_u8 = inst.get_typed_func::<(i64, i32), i32>(&mut store, "load_u8")?;
 
     for off in 0..64i32 {
         store_u8.call(&mut store, (packed, off, ((off ^ 0xa5) & 0xff)))?;
@@ -152,7 +154,7 @@ fn typed_u32_le_round_trip() -> Result<()> {
     let inst = linker.instantiate(&mut store, &module)?;
 
     let store_u32 = inst.get_typed_func::<(i64, i32, i32), i32>(&mut store, "store_u32_le")?;
-    let load_u32  = inst.get_typed_func::<(i64, i32), i32>(&mut store, "load_u32_le")?;
+    let load_u32 = inst.get_typed_func::<(i64, i32), i32>(&mut store, "load_u32_le")?;
 
     let values = [0u32, 1, 0xdeadbeef, 0xffffffff, 0x80000000];
     for (i, &v) in values.iter().enumerate() {
@@ -176,10 +178,15 @@ fn typed_i64_le_round_trip() -> Result<()> {
     let inst = linker.instantiate(&mut store, &module)?;
 
     let store_i64 = inst.get_typed_func::<(i64, i32, i64), i32>(&mut store, "store_i64_le")?;
-    let load_i64  = inst.get_typed_func::<(i64, i32), i64>(&mut store, "load_i64_le")?;
+    let load_i64 = inst.get_typed_func::<(i64, i32), i64>(&mut store, "load_i64_le")?;
 
     let values = [
-        0i64, -1, i64::MAX, i64::MIN, 0x0102030405060708, -0x0102030405060708,
+        0i64,
+        -1,
+        i64::MAX,
+        i64::MIN,
+        0x0102030405060708,
+        -0x0102030405060708,
     ];
     for (i, &v) in values.iter().enumerate() {
         let off = (i * 8) as i32;
@@ -291,9 +298,7 @@ const REDUCER_WAT: &str = r#"
 )
 "#;
 
-fn build_reducer_inst(
-    store: &mut Store<TvmHost>,
-) -> Result<wasmtime::Instance> {
+fn build_reducer_inst(store: &mut Store<TvmHost>) -> Result<wasmtime::Instance> {
     let module = Module::new(store.engine(), REDUCER_WAT)?;
     let mut linker: Linker<TvmHost> = Linker::new(store.engine());
     add_raw_imports(&mut linker)?;
@@ -347,8 +352,8 @@ fn reducer_roundtrip_all_ops() -> Result<()> {
     let f = inst.get_typed_func::<(i64, i32, i32), i32>(&mut store, "call_find_byte")?;
     assert_eq!(f.call(&mut store, (p1, 256, 0x80))?, 0x80);
     assert_eq!(f.call(&mut store, (p1, 256, 0x00))?, 0); // first
-    // Not present: only 0..=255 in 256 bytes; pick a value in range but
-    // limit search to first 16 bytes where it doesn't appear.
+                                                         // Not present: only 0..=255 in 256 bytes; pick a value in range but
+                                                         // limit search to first 16 bytes where it doesn't appear.
     assert_eq!(f.call(&mut store, (p1, 16, 0xff))?, -1);
 
     // and_fold / or_fold / xor_fold — at length 256 every byte 0..255
@@ -432,7 +437,10 @@ fn reducer_mutators_modify_in_place() -> Result<()> {
     // XOR src (0x0f) into dst (0xff) → 0xf0
     assert_eq!(f.call(&mut store, (packed2, packed, 128))?, 0);
     store.data_mut().read_bytes(h, &mut buf)?;
-    assert!(buf.iter().all(|&b| b == 0xf0), "xor_into_region must apply src bytes");
+    assert!(
+        buf.iter().all(|&b| b == 0xf0),
+        "xor_into_region must apply src bytes"
+    );
 
     Ok(())
 }

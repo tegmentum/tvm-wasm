@@ -1,6 +1,4 @@
-use tvm_core::{
-    AllocatorKind, Handle, RegionDirectory, RegionKind, TvmError, VecBackedRegion,
-};
+use tvm_core::{AllocatorKind, Handle, RegionDirectory, RegionKind, TvmError, VecBackedRegion};
 
 #[test]
 fn compaction_packs_blocks_and_remaps_handles() {
@@ -190,6 +188,10 @@ fn migrate_returns_none_for_unrelated_handle() {
     dir.alloc(r, 4).unwrap();
     let remap = dir.compact_region(r).unwrap();
 
-    let unrelated = Handle { region_id: 99, generation: 1, offset: 0 };
+    let unrelated = Handle {
+        region_id: 99,
+        generation: 1,
+        offset: 0,
+    };
     assert_eq!(remap.migrate(unrelated), None);
 }

@@ -26,15 +26,15 @@ mod stats {
     use std::time::Duration;
     pub fn pct(sorted: &[Duration], p: f64) -> u128 {
         let n = sorted.len();
-        if n == 0 { return 0; }
+        if n == 0 {
+            return 0;
+        }
         let idx = ((p / 100.0) * (n as f64 - 1.0)).round() as usize;
         sorted[idx.min(n - 1)].as_nanos()
     }
 }
 
-fn time_loop<F: FnMut() -> anyhow::Result<()>>(
-    mut f: F,
-) -> anyhow::Result<Vec<Duration>> {
+fn time_loop<F: FnMut() -> anyhow::Result<()>>(mut f: F) -> anyhow::Result<Vec<Duration>> {
     for _ in 0..WARMUP {
         f()?;
     }
@@ -49,8 +49,7 @@ fn time_loop<F: FnMut() -> anyhow::Result<()>>(
 
 fn report(label: &str, size: u32, t: &mut Vec<Duration>) {
     t.sort();
-    let mean_ns =
-        t.iter().map(|d| d.as_nanos() as f64).sum::<f64>() / t.len() as f64;
+    let mean_ns = t.iter().map(|d| d.as_nanos() as f64).sum::<f64>() / t.len() as f64;
     let p99 = stats::pct(t, 99.0);
     let bw = (size as f64) / (mean_ns / 1e9) / (1u64 << 30) as f64;
     println!(
@@ -83,19 +82,14 @@ fn run_m32(size: u32, data: &[u8]) -> anyhow::Result<Vec<Duration>> {
     let instance = linker.instantiate(&mut store, &module)?;
     let memory = instance.get_memory(&mut store, "memory").unwrap();
     memory.write(&mut store, 0, data)?;
-    let sum =
-        instance.get_typed_func::<(i32, i32), i64>(&mut store, "sum_sequential")?;
+    let sum = instance.get_typed_func::<(i32, i32), i64>(&mut store, "sum_sequential")?;
     time_loop(|| {
         let _ = sum.call(&mut store, (0, size as i32))?;
         Ok(())
     })
 }
 
-fn run_guest_mm_bulk(
-    size: u32,
-    data: &[u8],
-    n_pools: u32,
-) -> anyhow::Result<Vec<Duration>> {
+fn run_guest_mm_bulk(size: u32, data: &[u8], n_pools: u32) -> anyhow::Result<Vec<Duration>> {
     // Bulk-copy idiom: copy region into default memory in one dispatch
     // call, then sum natively. One pool dispatch per call regardless
     // of `len`. This is the workload pattern users should actually use.
@@ -132,19 +126,14 @@ fn run_guest_mm_bulk(
     let instance = linker.instantiate(&mut store, &module)?;
     let mem1 = instance.get_memory(&mut store, "mem1").unwrap();
     mem1.write(&mut store, 0, data)?;
-    let sum = instance
-        .get_typed_func::<(i32, i32, i32), i64>(&mut store, "sum_via_bulk")?;
+    let sum = instance.get_typed_func::<(i32, i32, i32), i64>(&mut store, "sum_via_bulk")?;
     time_loop(|| {
         let _ = sum.call(&mut store, (1, 0, size as i32))?;
         Ok(())
     })
 }
 
-fn run_guest_mm(
-    size: u32,
-    data: &[u8],
-    n_pools: u32,
-) -> anyhow::Result<Vec<Duration>> {
+fn run_guest_mm(size: u32, data: &[u8], n_pools: u32) -> anyhow::Result<Vec<Duration>> {
     // The user body sums via dispatcher calls. Pool 1 is the data pool.
     let user_body = r#"
         (func (export "buffer_ptr") (result i32) (i32.const 0))
@@ -180,8 +169,7 @@ fn run_guest_mm(
     let instance = linker.instantiate(&mut store, &module)?;
     let mem1 = instance.get_memory(&mut store, "mem1").unwrap();
     mem1.write(&mut store, 0, data)?;
-    let sum =
-        instance.get_typed_func::<(i32, i32), i64>(&mut store, "sum_via_dispatch")?;
+    let sum = instance.get_typed_func::<(i32, i32), i64>(&mut store, "sum_via_dispatch")?;
     time_loop(|| {
         let _ = sum.call(&mut store, (0, size as i32))?;
         Ok(())
@@ -244,8 +232,8 @@ fn main() -> anyhow::Result<()> {
     let mut indirect = run_dispatch_named(size, &data, 64, "tvm_load_u8_indirect")?;
     report("BST (tvm_load_u8)  ", size, &mut bst);
     report("call_indirect      ", size, &mut indirect);
-    let mean_d = |v: &[Duration]| v.iter().map(|d| d.as_nanos() as f64).sum::<f64>()
-        / v.len() as f64;
+    let mean_d =
+        |v: &[Duration]| v.iter().map(|d| d.as_nanos() as f64).sum::<f64>() / v.len() as f64;
     let speedup = mean_d(&bst) / mean_d(&indirect);
     let raw_b: Vec<u128> = bst.iter().map(|d| d.as_nanos()).collect();
     let raw_i: Vec<u128> = indirect.iter().map(|d| d.as_nanos()).collect();

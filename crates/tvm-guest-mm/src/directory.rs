@@ -8,8 +8,8 @@
 
 use std::collections::HashMap;
 use tvm_core::{
-    AllocatorKind, Handle, HandleRemap, PlacementPolicy, Region,
-    RegionAllocator, RegionKind, Residency, Result, TvmError,
+    AllocatorKind, Handle, HandleRemap, PlacementPolicy, Region, RegionAllocator, RegionKind,
+    Residency, Result, TvmError,
 };
 
 use crate::facade::Dispatch;
@@ -89,7 +89,10 @@ impl GuestDirectory {
         allocator: AllocatorKind,
     ) -> Result<u16> {
         let id = self.next_id;
-        self.next_id = self.next_id.checked_add(1).ok_or(TvmError::AllocationFailed)?;
+        self.next_id = self
+            .next_id
+            .checked_add(1)
+            .ok_or(TvmError::AllocationFailed)?;
         let policy = PlacementPolicy::for_kind(kind);
         let pool_index = self.choose_pool(capacity, policy.initial_residency)?;
         let pool = &mut self.pools[pool_index as usize];
@@ -221,7 +224,9 @@ impl GuestDirectory {
             }
             mapping.insert(*old_off, cursor);
             new_blocks.push((cursor, *size));
-            cursor = cursor.checked_add(*size).ok_or(TvmError::AllocationFailed)?;
+            cursor = cursor
+                .checked_add(*size)
+                .ok_or(TvmError::AllocationFailed)?;
         }
 
         let old_gen = entry.meta.generation;
@@ -230,7 +235,9 @@ impl GuestDirectory {
             next = 1;
         }
         entry.meta.generation = next;
-        entry.allocator.rebuild_after_compact(&new_blocks, entry.meta.capacity);
+        entry
+            .allocator
+            .rebuild_after_compact(&new_blocks, entry.meta.capacity);
         entry.meta.used = entry.allocator.used();
 
         Ok(HandleRemap {
@@ -252,11 +259,7 @@ impl GuestDirectory {
     /// Where `mid = ceil(n/2)`. With `n=1` everything lands in pool 0.
     /// If the preferred band is full, falls through to the other band
     /// before returning `AllocationFailed`.
-    fn choose_pool(
-        &mut self,
-        capacity: u32,
-        residency: Residency,
-    ) -> Result<u32> {
+    fn choose_pool(&mut self, capacity: u32, residency: Residency) -> Result<u32> {
         let n = self.pools.len() as u32;
         if n == 0 {
             return Err(TvmError::AllocationFailed);
@@ -265,12 +268,20 @@ impl GuestDirectory {
         let prefers_hot = matches!(residency, Residency::Hot | Residency::External);
         // Try the preferred band first, then the other.
         let bands: [(u32, u32, &mut u32); 2] = if prefers_hot {
-            [(0, mid, &mut self.cursor_hot), (mid, n, &mut self.cursor_warm)]
+            [
+                (0, mid, &mut self.cursor_hot),
+                (mid, n, &mut self.cursor_warm),
+            ]
         } else {
-            [(mid, n, &mut self.cursor_warm), (0, mid, &mut self.cursor_hot)]
+            [
+                (mid, n, &mut self.cursor_warm),
+                (0, mid, &mut self.cursor_hot),
+            ]
         };
         for (lo, hi, cursor) in bands {
-            if lo == hi { continue; } // empty band when n=1
+            if lo == hi {
+                continue;
+            } // empty band when n=1
             let span = hi - lo;
             for offset in 0..span {
                 let idx = lo + (*cursor + offset) % span;
@@ -328,10 +339,18 @@ mod tests {
         // n=4 → mid=2 → hot band is pools [0, 2). HotHeap is Hot, so the
         // four HotHeap regions cycle through pools 0,1,0,1.
         let mut d = dir(4, 1024);
-        let r0 = d.create_region(RegionKind::HotHeap, 128, AllocatorKind::Bump).unwrap();
-        let r1 = d.create_region(RegionKind::HotHeap, 128, AllocatorKind::Bump).unwrap();
-        let r2 = d.create_region(RegionKind::HotHeap, 128, AllocatorKind::Bump).unwrap();
-        let r3 = d.create_region(RegionKind::HotHeap, 128, AllocatorKind::Bump).unwrap();
+        let r0 = d
+            .create_region(RegionKind::HotHeap, 128, AllocatorKind::Bump)
+            .unwrap();
+        let r1 = d
+            .create_region(RegionKind::HotHeap, 128, AllocatorKind::Bump)
+            .unwrap();
+        let r2 = d
+            .create_region(RegionKind::HotHeap, 128, AllocatorKind::Bump)
+            .unwrap();
+        let r3 = d
+            .create_region(RegionKind::HotHeap, 128, AllocatorKind::Bump)
+            .unwrap();
         let pools: [u32; 4] = [
             d.entry(r0).unwrap().pool_index,
             d.entry(r1).unwrap().pool_index,
@@ -345,9 +364,15 @@ mod tests {
     fn warm_regions_land_in_high_band() {
         // PageStore is Warm → high band [2, 4).
         let mut d = dir(4, 1024);
-        let r0 = d.create_region(RegionKind::PageStore, 128, AllocatorKind::Bump).unwrap();
-        let r1 = d.create_region(RegionKind::PageStore, 128, AllocatorKind::Bump).unwrap();
-        let r2 = d.create_region(RegionKind::PageStore, 128, AllocatorKind::Bump).unwrap();
+        let r0 = d
+            .create_region(RegionKind::PageStore, 128, AllocatorKind::Bump)
+            .unwrap();
+        let r1 = d
+            .create_region(RegionKind::PageStore, 128, AllocatorKind::Bump)
+            .unwrap();
+        let r2 = d
+            .create_region(RegionKind::PageStore, 128, AllocatorKind::Bump)
+            .unwrap();
         let pools: [u32; 3] = [
             d.entry(r0).unwrap().pool_index,
             d.entry(r1).unwrap().pool_index,
@@ -361,8 +386,11 @@ mod tests {
         // n=2 → mid=1 → hot band is pool 0 only. After exhausting it,
         // a Hot region must fall through to pool 1.
         let mut d = dir(2, 100);
-        d.create_region(RegionKind::HotHeap, 100, AllocatorKind::Bump).unwrap();
-        let r1 = d.create_region(RegionKind::HotHeap, 100, AllocatorKind::Bump).unwrap();
+        d.create_region(RegionKind::HotHeap, 100, AllocatorKind::Bump)
+            .unwrap();
+        let r1 = d
+            .create_region(RegionKind::HotHeap, 100, AllocatorKind::Bump)
+            .unwrap();
         assert_eq!(d.entry(r1).unwrap().pool_index, 1);
     }
 
@@ -392,7 +420,10 @@ mod tests {
             .unwrap();
         let h = d.alloc(r, 32).unwrap();
         // Hand-craft a stale handle (different generation).
-        let stale = Handle { generation: 99, ..h };
+        let stale = Handle {
+            generation: 99,
+            ..h
+        };
         assert!(matches!(d.resolve(stale), Err(TvmError::StaleHandle)));
     }
 
@@ -400,10 +431,14 @@ mod tests {
     fn out_of_capacity_falls_through_pools() {
         // n=3 → mid=2 → hot band [0,2), warm band [2,3).
         let mut d = dir(3, 100);
-        d.create_region(RegionKind::HotHeap, 100, AllocatorKind::Bump).unwrap();
-        d.create_region(RegionKind::HotHeap, 100, AllocatorKind::Bump).unwrap();
+        d.create_region(RegionKind::HotHeap, 100, AllocatorKind::Bump)
+            .unwrap();
+        d.create_region(RegionKind::HotHeap, 100, AllocatorKind::Bump)
+            .unwrap();
         // Third Hot region: hot band is full → falls through to warm.
-        let r3 = d.create_region(RegionKind::HotHeap, 100, AllocatorKind::Bump).unwrap();
+        let r3 = d
+            .create_region(RegionKind::HotHeap, 100, AllocatorKind::Bump)
+            .unwrap();
         assert_eq!(d.entry(r3).unwrap().pool_index, 2);
         // Fourth: nowhere to put it.
         assert!(matches!(
@@ -418,11 +453,18 @@ mod tests {
         // per create_region. region_info on a non-existent id returns
         // RegionNotFound without iterating.
         let mut d = dir(4, 4096);
-        let r1 = d.create_region(RegionKind::HotHeap, 64, AllocatorKind::Bump).unwrap();
-        let r2 = d.create_region(RegionKind::HotHeap, 64, AllocatorKind::Bump).unwrap();
+        let r1 = d
+            .create_region(RegionKind::HotHeap, 64, AllocatorKind::Bump)
+            .unwrap();
+        let r2 = d
+            .create_region(RegionKind::HotHeap, 64, AllocatorKind::Bump)
+            .unwrap();
         assert_eq!(r1, 1);
         assert_eq!(r2, 2);
         assert_eq!(d.slots.len(), 3); // null + r1 + r2
-        assert!(matches!(d.region_info(99), Err(TvmError::RegionNotFound(99))));
+        assert!(matches!(
+            d.region_info(99),
+            Err(TvmError::RegionNotFound(99))
+        ));
     }
 }

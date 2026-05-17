@@ -11,9 +11,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
 use tvm_core::async_backing::{AsyncBackingStore, LoadFuture, SpillFuture};
-use tvm_core::{
-    Handle, RegionDirectory, RegionKind, Residency, Result, TvmError, VecBackedRegion,
-};
+use tvm_core::{Handle, RegionDirectory, RegionKind, Residency, Result, TvmError, VecBackedRegion};
 
 // ---------- Tiny block-on executor ----------
 
@@ -80,9 +78,12 @@ impl AsyncBackingStore for AsyncTestBacking {
         let bytes = bytes.to_vec();
         Box::pin(async move {
             // Simulate async work by yielding once.
-            YieldOnce { yielded: false, value: Some(Ok(Vec::new())) }
-                .await
-                .ok();
+            YieldOnce {
+                yielded: false,
+                value: Some(Ok(Vec::new())),
+            }
+            .await
+            .ok();
             self.storage.insert((region_id, generation), bytes);
             Ok(())
         })
@@ -92,9 +93,12 @@ impl AsyncBackingStore for AsyncTestBacking {
         self.load_calls.fetch_add(1, Ordering::Relaxed);
         Box::pin(async move {
             // Yield once before the synchronous lookup.
-            YieldOnce { yielded: false, value: Some(Ok(Vec::new())) }
-                .await
-                .ok();
+            YieldOnce {
+                yielded: false,
+                value: Some(Ok(Vec::new())),
+            }
+            .await
+            .ok();
             self.storage
                 .get(&(region_id, generation))
                 .cloned()
@@ -202,6 +206,9 @@ fn async_path_actually_yields() -> Result<()> {
     let mut backing = AsyncTestBacking::new();
 
     let (_, polls) = drive_count(dir.spill_region_async(r, &mut backing));
-    assert!(polls >= 2, "expected at least 2 polls (Pending + Ready), got {polls}");
+    assert!(
+        polls >= 2,
+        "expected at least 2 polls (Pending + Ready), got {polls}"
+    );
     Ok(())
 }

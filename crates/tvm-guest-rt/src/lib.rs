@@ -79,33 +79,85 @@ mod raw {
 
 #[cfg(not(target_arch = "wasm32"))]
 mod raw {
-    pub unsafe fn alloc(_: i32, _: i32) -> i64 { 0 }
-    pub unsafe fn dealloc(_: i64) -> i32 { 0 }
-    pub unsafe fn read(_: i64, _: i32, _: i32) -> i32 { 0 }
-    pub unsafe fn write(_: i64, _: i32, _: i32) -> i32 { 0 }
-    pub unsafe fn read_gather(_: i64, _: i32, _: i32, _: i32, _: i32) -> i32 { 0 }
-    pub unsafe fn copy_region(_: i32, _: i32, _: i32, _: i32, _: i32) -> i32 { 0 }
-    pub unsafe fn last_error() -> i32 { 0 }
+    pub unsafe fn alloc(_: i32, _: i32) -> i64 {
+        0
+    }
+    pub unsafe fn dealloc(_: i64) -> i32 {
+        0
+    }
+    pub unsafe fn read(_: i64, _: i32, _: i32) -> i32 {
+        0
+    }
+    pub unsafe fn write(_: i64, _: i32, _: i32) -> i32 {
+        0
+    }
+    pub unsafe fn read_gather(_: i64, _: i32, _: i32, _: i32, _: i32) -> i32 {
+        0
+    }
+    pub unsafe fn copy_region(_: i32, _: i32, _: i32, _: i32, _: i32) -> i32 {
+        0
+    }
+    pub unsafe fn last_error() -> i32 {
+        0
+    }
 
-    pub unsafe fn sum_u8(_: i64, _: i32) -> i64 { 0 }
-    pub unsafe fn sum_u32_le(_: i64, _: i32) -> i64 { 0 }
-    pub unsafe fn max_u32_le(_: i64, _: i32) -> i64 { 0 }
-    pub unsafe fn count_byte(_: i64, _: i32, _: i32) -> i32 { 0 }
-    pub unsafe fn count_in_range(_: i64, _: i32, _: i32, _: i32) -> i32 { 0 }
-    pub unsafe fn popcount(_: i64, _: i32) -> i64 { 0 }
-    pub unsafe fn min_max_u8(_: i64, _: i32) -> i32 { 0 }
-    pub unsafe fn find_byte(_: i64, _: i32, _: i32) -> i32 { -1 }
-    pub unsafe fn index_of(_: i64, _: i32, _: i32, _: i32) -> i32 { -1 }
-    pub unsafe fn eq(_: i64, _: i64, _: i32) -> i32 { 0 }
-    pub unsafe fn lex_cmp(_: i64, _: i64, _: i32) -> i32 { 0 }
-    pub unsafe fn hash_fnv1a(_: i64, _: i32) -> i64 { 0 }
-    pub unsafe fn and_fold_u8(_: i64, _: i32) -> i32 { 0 }
-    pub unsafe fn or_fold_u8(_: i64, _: i32) -> i32 { 0 }
-    pub unsafe fn xor_fold_u8(_: i64, _: i32) -> i32 { 0 }
-    pub unsafe fn fill(_: i64, _: i32, _: i32) -> i32 { 0 }
-    pub unsafe fn xor_with_byte(_: i64, _: i32, _: i32) -> i32 { 0 }
-    pub unsafe fn xor_into_region(_: i64, _: i64, _: i32) -> i32 { 0 }
-    pub unsafe fn byte_histogram(_: i64, _: i32, _: i32) -> i32 { 0 }
+    pub unsafe fn sum_u8(_: i64, _: i32) -> i64 {
+        0
+    }
+    pub unsafe fn sum_u32_le(_: i64, _: i32) -> i64 {
+        0
+    }
+    pub unsafe fn max_u32_le(_: i64, _: i32) -> i64 {
+        0
+    }
+    pub unsafe fn count_byte(_: i64, _: i32, _: i32) -> i32 {
+        0
+    }
+    pub unsafe fn count_in_range(_: i64, _: i32, _: i32, _: i32) -> i32 {
+        0
+    }
+    pub unsafe fn popcount(_: i64, _: i32) -> i64 {
+        0
+    }
+    pub unsafe fn min_max_u8(_: i64, _: i32) -> i32 {
+        0
+    }
+    pub unsafe fn find_byte(_: i64, _: i32, _: i32) -> i32 {
+        -1
+    }
+    pub unsafe fn index_of(_: i64, _: i32, _: i32, _: i32) -> i32 {
+        -1
+    }
+    pub unsafe fn eq(_: i64, _: i64, _: i32) -> i32 {
+        0
+    }
+    pub unsafe fn lex_cmp(_: i64, _: i64, _: i32) -> i32 {
+        0
+    }
+    pub unsafe fn hash_fnv1a(_: i64, _: i32) -> i64 {
+        0
+    }
+    pub unsafe fn and_fold_u8(_: i64, _: i32) -> i32 {
+        0
+    }
+    pub unsafe fn or_fold_u8(_: i64, _: i32) -> i32 {
+        0
+    }
+    pub unsafe fn xor_fold_u8(_: i64, _: i32) -> i32 {
+        0
+    }
+    pub unsafe fn fill(_: i64, _: i32, _: i32) -> i32 {
+        0
+    }
+    pub unsafe fn xor_with_byte(_: i64, _: i32, _: i32) -> i32 {
+        0
+    }
+    pub unsafe fn xor_into_region(_: i64, _: i64, _: i32) -> i32 {
+        0
+    }
+    pub unsafe fn byte_histogram(_: i64, _: i32, _: i32) -> i32 {
+        0
+    }
 }
 
 /// Mirrors `tvm:memory/types.region-kind`. Discriminants must match the
@@ -152,7 +204,11 @@ impl Error {
 pub type Result<T> = core::result::Result<T, Error>;
 
 fn check(code: i32) -> Result<()> {
-    if code == 0 { Ok(()) } else { Err(Error::from_code(code)) }
+    if code == 0 {
+        Ok(())
+    } else {
+        Err(Error::from_code(code))
+    }
 }
 
 /// Opaque region identifier. Returned by `Region::create`; passed to host
@@ -168,7 +224,9 @@ impl Region {
     /// the WIT-bindgen-generated guest bindings to also be linked — the raw
     /// fast path doesn't provide region creation since it's a one-shot setup
     /// cost. See `examples/guest-fast-path` for the recommended layout.
-    pub fn from_id(id: u16) -> Self { Self { id } }
+    pub fn from_id(id: u16) -> Self {
+        Self { id }
+    }
 
     /// Allocate `size` bytes inside this region.
     pub fn alloc(self, size: u32) -> Result<RegionPtr> {
@@ -303,7 +361,9 @@ impl RegionPtr {
         let lo = ((self.packed as u64) & 0xFFFF_FFFF) as u32;
         let new_lo = lo.wrapping_add(delta);
         let high = (self.packed as u64) & 0xFFFF_FFFF_0000_0000;
-        RegionPtr { packed: (high | new_lo as u64) as i64 }
+        RegionPtr {
+            packed: (high | new_lo as u64) as i64,
+        }
     }
 }
 
@@ -364,9 +424,7 @@ impl RegionPtr {
 
     /// Count bytes in `[lo, hi]` (inclusive on both ends).
     pub fn count_in_range(self, len: u32, lo: u8, hi: u8) -> Result<u32> {
-        let v = unsafe {
-            raw::count_in_range(self.packed, len as i32, lo as i32, hi as i32)
-        };
+        let v = unsafe { raw::count_in_range(self.packed, len as i32, lo as i32, hi as i32) };
         if v < 0 {
             Err(Error::from_code(unsafe { raw::last_error() }))
         } else {
@@ -511,9 +569,7 @@ impl RegionPtr {
     /// (1024 bytes total) into `out`, where `out[i]` is the count of
     /// bytes equal to `i`.
     pub fn byte_histogram(self, len: u32, out: &mut [u8; 1024]) -> Result<()> {
-        let code = unsafe {
-            raw::byte_histogram(self.packed, len as i32, out.as_mut_ptr() as i32)
-        };
+        let code = unsafe { raw::byte_histogram(self.packed, len as i32, out.as_mut_ptr() as i32) };
         check(code)
     }
 }
@@ -522,12 +578,7 @@ impl RegionPtr {
     /// Scatter-read `count` items of `item_size` bytes each into a contiguous
     /// guest buffer. `indices` holds the per-item offsets within the region
     /// (relative to this RegionPtr). One host call regardless of count.
-    pub fn read_gather(
-        self,
-        indices: &[u32],
-        item_size: u32,
-        dst: &mut [u8],
-    ) -> Result<()> {
+    pub fn read_gather(self, indices: &[u32], item_size: u32, dst: &mut [u8]) -> Result<()> {
         let code = unsafe {
             raw::read_gather(
                 self.packed,
@@ -569,8 +620,7 @@ where
     while consumed < total_len {
         let to_read = core::cmp::min(N as u32, total_len - consumed);
         let cur = RegionPtr {
-            packed: (ptr.packed
-                & 0xFFFF_FFFF_0000_0000_u64 as i64)
+            packed: (ptr.packed & 0xFFFF_FFFF_0000_0000_u64 as i64)
                 | ((((ptr.packed as u64) & 0xFFFF_FFFF) as u32 + consumed) as i64),
         };
         cur.read(&mut buf[..to_read as usize])?;

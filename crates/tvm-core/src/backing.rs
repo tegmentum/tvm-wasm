@@ -11,7 +11,9 @@ pub struct VecBackedRegion {
 
 impl VecBackedRegion {
     pub fn new(capacity: u32) -> Self {
-        Self { data: vec![0u8; capacity as usize] }
+        Self {
+            data: vec![0u8; capacity as usize],
+        }
     }
 
     pub fn from_bytes(data: Vec<u8>) -> Self {
@@ -117,13 +119,13 @@ pub struct FileBackingStore {
 impl FileBackingStore {
     pub fn new(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
-        std::fs::create_dir_all(&root)
-            .map_err(|e| TvmError::BackingStore(e.to_string()))?;
+        std::fs::create_dir_all(&root).map_err(|e| TvmError::BackingStore(e.to_string()))?;
         Ok(Self { root })
     }
 
     fn path(&self, region_id: u16, generation: u16) -> PathBuf {
-        self.root.join(format!("region-{region_id}-gen-{generation}.bin"))
+        self.root
+            .join(format!("region-{region_id}-gen-{generation}.bin"))
     }
 }
 
@@ -146,14 +148,17 @@ fn write_all(path: &Path, bytes: &[u8]) -> Result<()> {
         .truncate(true)
         .open(path)
         .map_err(|e| TvmError::BackingStore(e.to_string()))?;
-    f.write_all(bytes).map_err(|e| TvmError::BackingStore(e.to_string()))?;
+    f.write_all(bytes)
+        .map_err(|e| TvmError::BackingStore(e.to_string()))?;
     Ok(())
 }
 
 fn read_all(path: &Path) -> Result<Vec<u8>> {
     let mut f = File::open(path).map_err(|e| TvmError::BackingStore(e.to_string()))?;
     let mut buf = Vec::new();
-    f.seek(SeekFrom::Start(0)).map_err(|e| TvmError::BackingStore(e.to_string()))?;
-    f.read_to_end(&mut buf).map_err(|e| TvmError::BackingStore(e.to_string()))?;
+    f.seek(SeekFrom::Start(0))
+        .map_err(|e| TvmError::BackingStore(e.to_string()))?;
+    f.read_to_end(&mut buf)
+        .map_err(|e| TvmError::BackingStore(e.to_string()))?;
     Ok(buf)
 }

@@ -36,9 +36,8 @@ fn concurrent_allocs_distinct_regions_via_host() {
     let host = Arc::new(ConcurrentTvmHost::new());
     let mut regions = Vec::new();
     for _ in 0..8 {
-        let r =
-            ManagerHost::create_region(&mut host.as_ref().clone(), RegionKind::HotHeap, 1024)
-                .unwrap();
+        let r = ManagerHost::create_region(&mut host.as_ref().clone(), RegionKind::HotHeap, 1024)
+            .unwrap();
         regions.push(r);
     }
 

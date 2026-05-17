@@ -69,11 +69,7 @@ fn round_trip_via_imported_region() -> anyhow::Result<()> {
 
     // Write through the host into the imported memory. The guest will read
     // these bytes natively.
-    let memory = store
-        .data()
-        .imported_region(region_id)
-        .unwrap()
-        .memory();
+    let memory = store.data().imported_region(region_id).unwrap().memory();
     let payload: Vec<u8> = (0..=255u8).collect();
     memory.write(&mut store, handle.offset as usize, &payload)?;
 

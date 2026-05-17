@@ -43,9 +43,7 @@
 //! scoring callback — both fit cleanly because all routing already
 //! happens here.
 
-use tvm_core::{
-    Handle, Region, RegionKind, Result, TvmError, TvmFacade,
-};
+use tvm_core::{Handle, Region, RegionKind, Result, TvmError, TvmFacade};
 
 use crate::facade::GuestTvm;
 
@@ -65,12 +63,18 @@ struct RegionMap {
 
 impl RegionMap {
     fn new() -> Self {
-        Self { slots: vec![None], next_id: 1 } // index 0 reserved
+        Self {
+            slots: vec![None],
+            next_id: 1,
+        } // index 0 reserved
     }
 
     fn insert(&mut self, shard: ShardId, inner: u16) -> Result<u16> {
         let id = self.next_id;
-        self.next_id = self.next_id.checked_add(1).ok_or(TvmError::AllocationFailed)?;
+        self.next_id = self
+            .next_id
+            .checked_add(1)
+            .ok_or(TvmError::AllocationFailed)?;
         self.slots.push(Some((shard, inner)));
         Ok(id)
     }
@@ -94,8 +98,15 @@ pub struct MultiGuestTvm {
 
 impl MultiGuestTvm {
     pub fn new(shards: Vec<GuestTvm>) -> Self {
-        assert!(!shards.is_empty(), "MultiGuestTvm requires at least one shard");
-        Self { shards, map: RegionMap::new(), placement_cursor: 0 }
+        assert!(
+            !shards.is_empty(),
+            "MultiGuestTvm requires at least one shard"
+        );
+        Self {
+            shards,
+            map: RegionMap::new(),
+            placement_cursor: 0,
+        }
     }
 
     pub fn shard_count(&self) -> usize {
@@ -197,8 +208,8 @@ impl TvmFacade for MultiGuestTvm {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::facade::FnDispatch;
     use crate::directory::Pool;
+    use crate::facade::FnDispatch;
     use std::sync::Mutex;
 
     // Stub backing shared across shards. Each shard claims a contiguous
@@ -222,7 +233,10 @@ mod tests {
     fn stub_intra_pool_copy(pool: u32, dst_off: u32, src_off: u32, len: u32) -> Result<()> {
         let mut pools = STUB_POOLS.lock().unwrap();
         let p = &mut pools[pool as usize];
-        p.copy_within(src_off as usize..src_off as usize + len as usize, dst_off as usize);
+        p.copy_within(
+            src_off as usize..src_off as usize + len as usize,
+            dst_off as usize,
+        );
         Ok(())
     }
 
@@ -314,7 +328,13 @@ mod tests {
         let mut m = build(2, 1, 4096);
         let r = m.create_region(RegionKind::HotHeap, 256).unwrap();
         let h = m.alloc(r, 32).unwrap();
-        let stale = Handle { generation: 99, ..h };
-        assert!(matches!(m.read(stale, &mut [0u8; 32]), Err(TvmError::StaleHandle)));
+        let stale = Handle {
+            generation: 99,
+            ..h
+        };
+        assert!(matches!(
+            m.read(stale, &mut [0u8; 32]),
+            Err(TvmError::StaleHandle)
+        ));
     }
 }

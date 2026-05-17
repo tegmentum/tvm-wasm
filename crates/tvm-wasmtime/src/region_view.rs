@@ -95,9 +95,7 @@ impl<'a> RegionView<'a> {
     pub fn read(&self, offset: u32, dst: &mut [u8]) -> Result<()> {
         let bytes = self.data()?;
         let start = offset as usize;
-        let end = start
-            .checked_add(dst.len())
-            .ok_or(TvmError::OutOfBounds)?;
+        let end = start.checked_add(dst.len()).ok_or(TvmError::OutOfBounds)?;
         if end > bytes.len() {
             return Err(TvmError::OutOfBounds);
         }
@@ -110,9 +108,7 @@ impl<'a> RegionView<'a> {
     pub fn write(&mut self, offset: u32, src: &[u8]) -> Result<()> {
         let bytes = self.data_mut()?;
         let start = offset as usize;
-        let end = start
-            .checked_add(src.len())
-            .ok_or(TvmError::OutOfBounds)?;
+        let end = start.checked_add(src.len()).ok_or(TvmError::OutOfBounds)?;
         if end > bytes.len() {
             return Err(TvmError::OutOfBounds);
         }
@@ -214,7 +210,13 @@ mod tests {
         let (mut host, r) = host_with_region(128);
         let mut view = host.region_view(r).unwrap();
         let mut buf = [0u8; 32];
-        assert!(matches!(view.read(120, &mut buf), Err(TvmError::OutOfBounds)));
-        assert!(matches!(view.write(120, &[0u8; 32]), Err(TvmError::OutOfBounds)));
+        assert!(matches!(
+            view.read(120, &mut buf),
+            Err(TvmError::OutOfBounds)
+        ));
+        assert!(matches!(
+            view.write(120, &[0u8; 32]),
+            Err(TvmError::OutOfBounds)
+        ));
     }
 }

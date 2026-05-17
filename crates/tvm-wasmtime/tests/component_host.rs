@@ -245,7 +245,10 @@ fn cache_invalidated_after_compact() {
 
     // Re-resolve should pick up the new generation.
     let hit = host.resolve(r).unwrap();
-    assert_eq!(hit.generation, host.directory.region_info(r).unwrap().generation);
+    assert_eq!(
+        hit.generation,
+        host.directory.region_info(r).unwrap().generation
+    );
 }
 
 #[test]

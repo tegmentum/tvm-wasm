@@ -23,9 +23,7 @@
 //! //   - guest-side GuestTvm
 //! ```
 
-use tvm_core::{
-    AllocatorKind, Handle, Region, RegionKind, Result, TvmError, TvmFacade,
-};
+use tvm_core::{AllocatorKind, Handle, Region, RegionKind, Result, TvmError, TvmFacade};
 
 use crate::directory::{GuestDirectory, Pool};
 
@@ -93,13 +91,7 @@ pub trait Dispatch: Send + Sync {
     /// Copy `len` bytes from `src_off` to `dst_off` within the same
     /// pool. Used by `compact_region`. Source and destination may
     /// overlap (wasm memory.copy semantics).
-    fn intra_pool_copy(
-        &self,
-        pool: u32,
-        dst_off: u32,
-        src_off: u32,
-        len: u32,
-    ) -> Result<()>;
+    fn intra_pool_copy(&self, pool: u32, dst_off: u32, src_off: u32, len: u32) -> Result<()>;
 }
 
 /// Adapter that wraps three plain function pointers / closures into a
@@ -144,13 +136,7 @@ where
     fn write_bytes(&self, pool: u32, offset: u32, src: &[u8]) -> Result<()> {
         (self.write)(pool, offset, src)
     }
-    fn intra_pool_copy(
-        &self,
-        pool: u32,
-        dst_off: u32,
-        src_off: u32,
-        len: u32,
-    ) -> Result<()> {
+    fn intra_pool_copy(&self, pool: u32, dst_off: u32, src_off: u32, len: u32) -> Result<()> {
         (self.copy)(pool, dst_off, src_off, len)
     }
 }
@@ -206,10 +192,7 @@ impl GuestTvm {
     /// Only supported for regions backed by an allocator that tracks
     /// allocations (Freelist today; Bump returns
     /// `UnsupportedAllocator`).
-    pub fn compact_region(
-        &mut self,
-        region_id: u16,
-    ) -> Result<tvm_core::HandleRemap> {
+    pub fn compact_region(&mut self, region_id: u16) -> Result<tvm_core::HandleRemap> {
         // Cache invalidation: compaction bumps the region's generation
         // and may move blocks within the pool. Drop the cache entry
         // for this region so subsequent ops re-resolve.
@@ -232,7 +215,10 @@ impl GuestTvm {
         {
             // Bounds check on offset still happens via the dispatch
             // call; we just save the directory lookup here.
-            let abs = self.cache.base_offset.checked_add(handle.offset)
+            let abs = self
+                .cache
+                .base_offset
+                .checked_add(handle.offset)
                 .ok_or(TvmError::OutOfBounds)?;
             return Ok((self.cache.pool_index, abs));
         }
@@ -253,11 +239,7 @@ impl GuestTvm {
 }
 
 impl TvmFacade for GuestTvm {
-    fn create_region(
-        &mut self,
-        kind: RegionKind,
-        capacity: u32,
-    ) -> Result<u16> {
+    fn create_region(&mut self, kind: RegionKind, capacity: u32) -> Result<u16> {
         self.directory
             .create_region(kind, capacity, self.default_allocator)
     }
@@ -384,10 +366,16 @@ mod tests {
     fn with_default_allocator_freelist_creates_compactable_regions() {
         let mut pools = STUB_POOLS.lock().unwrap();
         pools.clear();
-        for _ in 0..2 { pools.push(vec![0u8; 4096]); }
+        for _ in 0..2 {
+            pools.push(vec![0u8; 4096]);
+        }
         drop(pools);
         let pool_descs: Vec<Pool> = (0..2u32)
-            .map(|i| Pool { memory_index: i, used: 0, capacity: 4096 })
+            .map(|i| Pool {
+                memory_index: i,
+                used: 0,
+                capacity: 4096,
+            })
             .collect();
         let mut g = GuestTvm::with_default_allocator(
             pool_descs,
@@ -399,7 +387,8 @@ mod tests {
         let r = g.create_region(RegionKind::HotHeap, 256).unwrap();
         let h = g.alloc(r, 64).unwrap();
         g.write(h, &[0x55; 64]).unwrap();
-        g.compact_region(r).expect("freelist regions are compactable");
+        g.compact_region(r)
+            .expect("freelist regions are compactable");
     }
 
     #[test]

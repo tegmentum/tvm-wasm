@@ -68,8 +68,7 @@ fn summarize(
 ) -> Sample {
     let mut sorted = timings.clone();
     sorted.sort();
-    let mean_ns =
-        timings.iter().map(|d| d.as_nanos() as f64).sum::<f64>() / timings.len() as f64;
+    let mean_ns = timings.iter().map(|d| d.as_nanos() as f64).sum::<f64>() / timings.len() as f64;
     let throughput_gib_per_s = if mean_ns > 0.0 {
         (size as f64) / (mean_ns / 1e9) / (1u64 << 30) as f64
     } else {
@@ -119,7 +118,11 @@ fn new_m32(wasm: &[u8]) -> anyhow::Result<M32> {
     let buffer_ptr_fn: TypedFunction<(), u32> =
         instance.exports.get_typed_function(&store, "buffer_ptr")?;
     let buffer_ptr = buffer_ptr_fn.call(&mut store)?;
-    Ok(M32 { store, instance, buffer_ptr })
+    Ok(M32 {
+        store,
+        instance,
+        buffer_ptr,
+    })
 }
 
 // -------------------- benches (M32 only — wasmer M64 support varies) --------------------
@@ -130,14 +133,23 @@ fn bench_m32_seq(wasm: &[u8], size: u32) -> anyhow::Result<Sample> {
     let mut data = vec![0u8; size as usize];
     fill_pattern(&mut data, SEED);
     memory.view(&a.store).write(a.buffer_ptr as u64, &data)?;
-    let sum: TypedFunction<(u32, u32), u64> =
-        a.instance.exports.get_typed_function(&a.store, "sum_sequential")?;
+    let sum: TypedFunction<(u32, u32), u64> = a
+        .instance
+        .exports
+        .get_typed_function(&a.store, "sum_sequential")?;
     let buf_ptr = a.buffer_ptr;
     let t = time(|| {
         let _ = sum.call(&mut a.store, buf_ptr, size)?;
         Ok(())
     })?;
-    Ok(summarize("wasmer", "m32", "sequential_sum", size, t, "wasmer engine"))
+    Ok(summarize(
+        "wasmer",
+        "m32",
+        "sequential_sum",
+        size,
+        t,
+        "wasmer engine",
+    ))
 }
 
 fn bench_m32_random(wasm: &[u8], size: u32) -> anyhow::Result<Sample> {
@@ -163,14 +175,23 @@ fn bench_m32_random(wasm: &[u8], size: u32) -> anyhow::Result<Sample> {
     let mut a = new_m32(wasm)?;
     let memory = a.instance.exports.get_memory("memory")?;
     memory.view(&a.store).write(a.buffer_ptr as u64, &bytes)?;
-    let chase: TypedFunction<(u32, u32, u32), u64> =
-        a.instance.exports.get_typed_function(&a.store, "random_chase")?;
+    let chase: TypedFunction<(u32, u32, u32), u64> = a
+        .instance
+        .exports
+        .get_typed_function(&a.store, "random_chase")?;
     let buf_ptr = a.buffer_ptr;
     let t = time(|| {
         let _ = chase.call(&mut a.store, buf_ptr, cells, steps)?;
         Ok(())
     })?;
-    Ok(summarize("wasmer", "m32", "random_chase", size, t, "wasmer engine"))
+    Ok(summarize(
+        "wasmer",
+        "m32",
+        "random_chase",
+        size,
+        t,
+        "wasmer engine",
+    ))
 }
 
 fn bench_m32_columnar(wasm: &[u8], size: u32) -> anyhow::Result<Sample> {
@@ -190,14 +211,23 @@ fn bench_m32_columnar(wasm: &[u8], size: u32) -> anyhow::Result<Sample> {
     memory
         .view(&a.store)
         .write((a.buffer_ptr as u64) + col_a.len() as u64, &col_b)?;
-    let q: TypedFunction<(u32, u32, u32), u64> =
-        a.instance.exports.get_typed_function(&a.store, "columnar_filter_sum")?;
+    let q: TypedFunction<(u32, u32, u32), u64> = a
+        .instance
+        .exports
+        .get_typed_function(&a.store, "columnar_filter_sum")?;
     let buf_ptr = a.buffer_ptr;
     let t = time(|| {
         let _ = q.call(&mut a.store, buf_ptr, n, threshold)?;
         Ok(())
     })?;
-    Ok(summarize("wasmer", "m32", "columnar_filter_sum", size, t, "wasmer engine"))
+    Ok(summarize(
+        "wasmer",
+        "m32",
+        "columnar_filter_sum",
+        size,
+        t,
+        "wasmer engine",
+    ))
 }
 
 fn read_wasm(rel: &str) -> anyhow::Result<Vec<u8>> {
@@ -225,7 +255,10 @@ fn main() -> anyhow::Result<()> {
 
     for &size in SIZES {
         for (name, f) in &[
-            ("sequential", bench_m32_seq as fn(&[u8], u32) -> anyhow::Result<Sample>),
+            (
+                "sequential",
+                bench_m32_seq as fn(&[u8], u32) -> anyhow::Result<Sample>,
+            ),
             ("random", bench_m32_random),
             ("columnar", bench_m32_columnar),
         ] {

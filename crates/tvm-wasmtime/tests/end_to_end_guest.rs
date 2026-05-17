@@ -57,8 +57,7 @@ fn build_guest_core_wasm() -> anyhow::Result<Vec<u8>> {
         anyhow::bail!("guest cargo build failed");
     }
 
-    let wasm = guest_dir
-        .join("target/wasm32-unknown-unknown/release/tvm_guest_demo.wasm");
+    let wasm = guest_dir.join("target/wasm32-unknown-unknown/release/tvm_guest_demo.wasm");
     Ok(std::fs::read(wasm)?)
 }
 

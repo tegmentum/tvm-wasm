@@ -41,7 +41,11 @@ pub struct RunConfig {
 
 impl Default for RunConfig {
     fn default() -> Self {
-        Self { warmup_rounds: 5, samples: 50, payload_bytes: 0 }
+        Self {
+            warmup_rounds: 5,
+            samples: 50,
+            payload_bytes: 0,
+        }
     }
 }
 
@@ -137,8 +141,11 @@ pub fn mann_whitney_u(a: &[u128], b: &[u128]) -> f64 {
     if n_a == 0.0 || n_b == 0.0 {
         return 0.5;
     }
-    let mut combined: Vec<(u128, usize)> =
-        a.iter().map(|v| (*v, 0)).chain(b.iter().map(|v| (*v, 1))).collect();
+    let mut combined: Vec<(u128, usize)> = a
+        .iter()
+        .map(|v| (*v, 0))
+        .chain(b.iter().map(|v| (*v, 1)))
+        .collect();
     combined.sort_by_key(|p| p.0);
     let mut ranks = vec![0.0f64; combined.len()];
     let mut i = 0;

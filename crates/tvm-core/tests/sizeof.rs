@@ -1,12 +1,13 @@
 use std::mem::size_of;
-use tvm_core::{
-    Handle, Region, RegionAllocator, RegionMetrics, ResolveCache, VecBackedRegion,
-};
+use tvm_core::{Handle, Region, RegionAllocator, RegionMetrics, ResolveCache, VecBackedRegion};
 
 #[test]
 fn report_sizes() {
     println!("size_of::<Region>() = {}", size_of::<Region>());
-    println!("size_of::<RegionMetrics>() = {}", size_of::<RegionMetrics>());
+    println!(
+        "size_of::<RegionMetrics>() = {}",
+        size_of::<RegionMetrics>()
+    );
     println!(
         "size_of::<RegionAllocator>() = {}",
         size_of::<RegionAllocator>()

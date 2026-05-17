@@ -82,11 +82,15 @@ impl Default for SharedTvmHost {
 
 impl SharedTvmHost {
     pub fn new() -> Self {
-        Self { inner: Arc::new(Mutex::new(TvmHost::new())) }
+        Self {
+            inner: Arc::new(Mutex::new(TvmHost::new())),
+        }
     }
 
     pub fn from_host(host: TvmHost) -> Self {
-        Self { inner: Arc::new(Mutex::new(host)) }
+        Self {
+            inner: Arc::new(Mutex::new(host)),
+        }
     }
 
     pub fn with_backing(path: impl AsRef<std::path::Path>) -> Result<Self, CoreError> {

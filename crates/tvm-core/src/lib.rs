@@ -29,16 +29,16 @@ pub mod async_backing;
 pub mod backing;
 pub mod cache;
 pub mod concurrent;
-pub mod prelude;
 pub mod debug;
 pub mod directory;
 mod directory_slices;
-pub mod facade;
 pub mod error;
 pub mod external;
+pub mod facade;
 pub mod handle;
 pub mod metrics;
 pub mod policy;
+pub mod prelude;
 pub mod region;
 pub mod residency;
 pub mod shared;
@@ -50,17 +50,17 @@ pub use async_backing::{AsyncBackingStore, SyncAdapter};
 pub use backing::{
     BackingStore, DynBackingStore, FileBackingStore, SingleFileBackingStore, VecBackedRegion,
 };
-pub use directory::{HandleRemap, MemoryRegion, RegionDirectory, RegionEntry};
-pub use facade::{TvmFacade, TvmSpill};
-pub use error::{
-    set_last_error_context, take_last_error_context, ErrorContext, Result, TvmError,
-};
-pub use handle::Handle;
-pub use metrics::{MetricsSnapshot, RegionMetrics};
-pub use region::{Region, RegionKind};
-pub use residency::Residency;
-pub use debug::{dump_region_layout, fault_counts, validate_handle, validate_handles, HandleStatus};
 pub use cache::{FastHit, ResolveCache, ResolveHit};
 pub use concurrent::ConcurrentDirectory;
+pub use debug::{
+    dump_region_layout, fault_counts, validate_handle, validate_handles, HandleStatus,
+};
+pub use directory::{HandleRemap, MemoryRegion, RegionDirectory, RegionEntry};
+pub use error::{set_last_error_context, take_last_error_context, ErrorContext, Result, TvmError};
+pub use facade::{TvmFacade, TvmSpill};
+pub use handle::Handle;
+pub use metrics::{MetricsSnapshot, RegionMetrics};
 pub use policy::PlacementPolicy;
+pub use region::{Region, RegionKind};
+pub use residency::Residency;
 pub use shared::SharedDirectory;

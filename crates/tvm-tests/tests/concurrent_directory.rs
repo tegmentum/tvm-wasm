@@ -15,7 +15,10 @@ struct SlowRegion {
 
 impl SlowRegion {
     fn new(capacity: u32, sleep: Duration) -> Self {
-        Self { inner: VecBackedRegion::new(capacity), sleep }
+        Self {
+            inner: VecBackedRegion::new(capacity),
+            sleep,
+        }
     }
 }
 
@@ -38,7 +41,10 @@ impl MemoryRegion for SlowRegion {
     }
 
     fn restore(bytes: Vec<u8>) -> Self {
-        Self { inner: VecBackedRegion::from_bytes(bytes), sleep: Duration::ZERO }
+        Self {
+            inner: VecBackedRegion::from_bytes(bytes),
+            sleep: Duration::ZERO,
+        }
     }
 }
 
@@ -56,11 +62,7 @@ fn parallel_writes_to_distinct_regions_do_not_serialize() {
         .unwrap();
     // r1: writes immediately.
     let r1 = dir
-        .create_region(
-            RegionKind::Scratch,
-            16,
-            SlowRegion::new(16, Duration::ZERO),
-        )
+        .create_region(RegionKind::Scratch, 16, SlowRegion::new(16, Duration::ZERO))
         .unwrap();
 
     let h0 = dir.alloc(r0, 4).unwrap();
@@ -106,8 +108,7 @@ fn parallel_writes_to_distinct_regions_do_not_serialize() {
 
 #[test]
 fn parallel_allocs_distinct_regions() {
-    let dir: Arc<ConcurrentDirectory<VecBackedRegion>> =
-        Arc::new(ConcurrentDirectory::new());
+    let dir: Arc<ConcurrentDirectory<VecBackedRegion>> = Arc::new(ConcurrentDirectory::new());
     let mut regions = Vec::new();
     for _ in 0..8 {
         regions.push(
@@ -137,8 +138,7 @@ fn parallel_allocs_distinct_regions() {
 
 #[test]
 fn destroy_serializes_against_outer_lock() {
-    let dir: Arc<ConcurrentDirectory<VecBackedRegion>> =
-        Arc::new(ConcurrentDirectory::new());
+    let dir: Arc<ConcurrentDirectory<VecBackedRegion>> = Arc::new(ConcurrentDirectory::new());
     let r = dir
         .create_region(RegionKind::Scratch, 32, VecBackedRegion::new(32))
         .unwrap();
@@ -148,8 +148,7 @@ fn destroy_serializes_against_outer_lock() {
 
 #[test]
 fn cross_region_copy_locks_in_order() {
-    let dir: Arc<ConcurrentDirectory<VecBackedRegion>> =
-        Arc::new(ConcurrentDirectory::new());
+    let dir: Arc<ConcurrentDirectory<VecBackedRegion>> = Arc::new(ConcurrentDirectory::new());
     let a = dir
         .create_region(RegionKind::HotHeap, 32, VecBackedRegion::new(32))
         .unwrap();

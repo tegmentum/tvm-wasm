@@ -115,13 +115,10 @@ pub fn emit_wasi_spill_helpers(n_pools: u32) -> String {
 ///   3. Base dispatchers (load / store / copy)
 ///   4. WASI spill helpers
 ///   5. User body
-pub fn tvm_guest_mm_module_with_wasi_spill(
-    p: &crate::ModuleParams,
-) -> String {
+pub fn tvm_guest_mm_module_with_wasi_spill(p: &crate::ModuleParams) -> String {
     use crate::dispatch::{
-        emit_bulk_copy_dispatcher, emit_bulk_copy_from_default_dispatcher,
-        emit_load_dispatcher, emit_specialized_copy_helpers,
-        emit_store_dispatcher,
+        emit_bulk_copy_dispatcher, emit_bulk_copy_from_default_dispatcher, emit_load_dispatcher,
+        emit_specialized_copy_helpers, emit_store_dispatcher,
     };
     let mut s = String::new();
     s.push_str("(module\n");
@@ -136,12 +133,42 @@ pub fn tvm_guest_mm_module_with_wasi_spill(
     }
     s.push('\n');
     // 3. Base dispatchers.
-    s.push_str(&emit_load_dispatcher("tvm_load_u8", "i32.load8_u", "i32", p.n_pools));
-    s.push_str(&emit_load_dispatcher("tvm_load_u32", "i32.load", "i32", p.n_pools));
-    s.push_str(&emit_load_dispatcher("tvm_load_i64", "i64.load", "i64", p.n_pools));
-    s.push_str(&emit_store_dispatcher("tvm_store_u8", "i32.store8", "i32", p.n_pools));
-    s.push_str(&emit_store_dispatcher("tvm_store_u32", "i32.store", "i32", p.n_pools));
-    s.push_str(&emit_store_dispatcher("tvm_store_i64", "i64.store", "i64", p.n_pools));
+    s.push_str(&emit_load_dispatcher(
+        "tvm_load_u8",
+        "i32.load8_u",
+        "i32",
+        p.n_pools,
+    ));
+    s.push_str(&emit_load_dispatcher(
+        "tvm_load_u32",
+        "i32.load",
+        "i32",
+        p.n_pools,
+    ));
+    s.push_str(&emit_load_dispatcher(
+        "tvm_load_i64",
+        "i64.load",
+        "i64",
+        p.n_pools,
+    ));
+    s.push_str(&emit_store_dispatcher(
+        "tvm_store_u8",
+        "i32.store8",
+        "i32",
+        p.n_pools,
+    ));
+    s.push_str(&emit_store_dispatcher(
+        "tvm_store_u32",
+        "i32.store",
+        "i32",
+        p.n_pools,
+    ));
+    s.push_str(&emit_store_dispatcher(
+        "tvm_store_i64",
+        "i64.store",
+        "i64",
+        p.n_pools,
+    ));
     s.push_str(&emit_bulk_copy_dispatcher(p.n_pools));
     s.push_str(&emit_bulk_copy_from_default_dispatcher(p.n_pools));
     s.push_str(&emit_specialized_copy_helpers(p.n_pools));

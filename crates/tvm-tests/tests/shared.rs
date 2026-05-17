@@ -50,8 +50,10 @@ fn parallel_allocs_in_same_region_succeed() {
 #[test]
 fn list_regions_under_lock() {
     let dir: SharedDirectory<VecBackedRegion> = SharedDirectory::new();
-    dir.create_region(RegionKind::HotHeap, 32, VecBackedRegion::new(32)).unwrap();
-    dir.create_region(RegionKind::Scratch, 32, VecBackedRegion::new(32)).unwrap();
+    dir.create_region(RegionKind::HotHeap, 32, VecBackedRegion::new(32))
+        .unwrap();
+    dir.create_region(RegionKind::Scratch, 32, VecBackedRegion::new(32))
+        .unwrap();
     let regions = dir.list_regions().unwrap();
     assert_eq!(regions.len(), 2);
 }

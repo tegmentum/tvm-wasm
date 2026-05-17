@@ -1,6 +1,4 @@
-use tvm_core::{
-    AllocatorKind, RegionDirectory, RegionKind, TvmError, VecBackedRegion,
-};
+use tvm_core::{AllocatorKind, RegionDirectory, RegionKind, TvmError, VecBackedRegion};
 
 #[test]
 fn copy_between_regions() {
@@ -16,7 +14,11 @@ fn copy_between_regions() {
 
     dir.cross_region_copy(src, h_src.offset, dst, 0, 8).unwrap();
 
-    let h_dst = tvm_core::Handle { region_id: dst, generation: 1, offset: 0 };
+    let h_dst = tvm_core::Handle {
+        region_id: dst,
+        generation: 1,
+        offset: 0,
+    };
     let mut buf = [0u8; 8];
     dir.read(h_dst, &mut buf).unwrap();
     assert_eq!(&buf, b"abcdefgh");

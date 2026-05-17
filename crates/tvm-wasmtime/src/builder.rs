@@ -109,11 +109,7 @@ impl TvmBuilder {
     /// Use this when the guest is a wasm component, not a core module.
     pub fn build_component(
         self,
-    ) -> wasmtime::Result<(
-        Engine,
-        Store<TvmHost>,
-        wasmtime::component::Linker<TvmHost>,
-    )> {
+    ) -> wasmtime::Result<(Engine, Store<TvmHost>, wasmtime::component::Linker<TvmHost>)> {
         let mut config = if self.multi_memory {
             crate::engine_config::imported_region_engine_config()
         } else {

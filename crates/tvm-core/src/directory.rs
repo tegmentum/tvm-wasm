@@ -3,13 +3,13 @@ use std::collections::{HashMap, VecDeque};
 use crate::allocator::{AllocatorKind, RegionAllocator};
 use crate::async_backing::AsyncBackingStore;
 use crate::backing::BackingStore;
+use crate::error::{Result, TvmError};
 use crate::external::ExternalLoader;
 use crate::handle::Handle;
 use crate::metrics::RegionMetrics;
 use crate::policy::PlacementPolicy;
 use crate::region::{Region, RegionKind};
 use crate::residency::Residency;
-use crate::error::{Result, TvmError};
 
 pub trait MemoryRegion {
     fn len(&self) -> u32;
@@ -88,7 +88,10 @@ impl<M: MemoryRegion> Default for RegionDirectory<M> {
 
 impl<M: MemoryRegion> RegionDirectory<M> {
     pub fn new() -> Self {
-        Self { regions: Vec::new(), warm_lru: VecDeque::new() }
+        Self {
+            regions: Vec::new(),
+            warm_lru: VecDeque::new(),
+        }
     }
 
     pub(crate) fn lru_remove(&mut self, region_id: u16) {
@@ -106,12 +109,7 @@ impl<M: MemoryRegion> RegionDirectory<M> {
         self.warm_lru.back().copied()
     }
 
-    pub fn create_region(
-        &mut self,
-        kind: RegionKind,
-        capacity: u32,
-        memory: M,
-    ) -> Result<u16> {
+    pub fn create_region(&mut self, kind: RegionKind, capacity: u32, memory: M) -> Result<u16> {
         self.create_region_with(kind, capacity, AllocatorKind::Bump, memory)
     }
 
@@ -142,8 +140,7 @@ impl<M: MemoryRegion> RegionDirectory<M> {
         policy: PlacementPolicy,
         memory: M,
     ) -> Result<u16> {
-        let id = u16::try_from(self.regions.len())
-            .map_err(|_| TvmError::AllocationFailed)?;
+        let id = u16::try_from(self.regions.len()).map_err(|_| TvmError::AllocationFailed)?;
         let initial_residency = policy.initial_residency;
         let entry = RegionEntry {
             meta: Region {
@@ -175,7 +172,9 @@ impl<M: MemoryRegion> RegionDirectory<M> {
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Region> {
-        self.regions.iter().filter_map(|slot| slot.as_ref().map(|e| &e.meta))
+        self.regions
+            .iter()
+            .filter_map(|slot| slot.as_ref().map(|e| &e.meta))
     }
 
     pub fn len(&self) -> usize {
@@ -186,11 +185,7 @@ impl<M: MemoryRegion> RegionDirectory<M> {
         self.len() == 0
     }
 
-    pub fn spill_region<B: BackingStore>(
-        &mut self,
-        region_id: u16,
-        store: &mut B,
-    ) -> Result<()> {
+    pub fn spill_region<B: BackingStore>(&mut self, region_id: u16, store: &mut B) -> Result<()> {
         let entry = self.entry_mut(region_id)?;
         if entry.meta.pinned {
             return Err(TvmError::Pinned);
@@ -284,7 +279,9 @@ impl<M: MemoryRegion> RegionDirectory<M> {
         }
         entry.meta.generation = next;
         entry.memory = Some(M::restore(new_data));
-        entry.allocator.rebuild_after_compact(&new_blocks, entry.meta.capacity);
+        entry
+            .allocator
+            .rebuild_after_compact(&new_blocks, entry.meta.capacity);
         entry.meta.used = entry.allocator.used();
 
         Ok(HandleRemap {
@@ -298,11 +295,7 @@ impl<M: MemoryRegion> RegionDirectory<M> {
     /// Load an External-tier region by calling the supplied loader. The
     /// loader returns the full byte contents of the region; the directory
     /// installs them via `M::restore` and transitions the region to Hot.
-    pub fn load_external_region(
-        &mut self,
-        region_id: u16,
-        loader: &ExternalLoader,
-    ) -> Result<()>
+    pub fn load_external_region(&mut self, region_id: u16, loader: &ExternalLoader) -> Result<()>
     where
         M: MemoryRegion,
     {
@@ -336,11 +329,7 @@ impl<M: MemoryRegion> RegionDirectory<M> {
     /// store; Warm → Hot just clears the LRU eligibility flag; Hot is a no-op.
     /// Records a promotion in the metrics and updates the cache invalidation
     /// is the caller's responsibility (TvmHost handles it).
-    pub fn promote_region<B: BackingStore>(
-        &mut self,
-        region_id: u16,
-        backing: &mut B,
-    ) -> Result<()>
+    pub fn promote_region<B: BackingStore>(&mut self, region_id: u16, backing: &mut B) -> Result<()>
     where
         M: MemoryRegion,
     {
@@ -365,11 +354,7 @@ impl<M: MemoryRegion> RegionDirectory<M> {
     /// Move a region one tier toward Cold. Hot → Warm marks the region as
     /// LRU-eligible (still resident, but available for eviction). Warm → Cold
     /// spills to the backing store. Cold and pinned regions are rejected.
-    pub fn demote_region<B: BackingStore>(
-        &mut self,
-        region_id: u16,
-        backing: &mut B,
-    ) -> Result<()>
+    pub fn demote_region<B: BackingStore>(&mut self, region_id: u16, backing: &mut B) -> Result<()>
     where
         M: MemoryRegion,
     {
@@ -397,10 +382,7 @@ impl<M: MemoryRegion> RegionDirectory<M> {
     /// Evict the oldest warm region by spilling it to the backing store.
     /// Returns `Some(id)` if a region was evicted, `None` if no warm regions
     /// are available. Skips pinned regions transparently.
-    pub fn evict_warm_region<B: BackingStore>(
-        &mut self,
-        backing: &mut B,
-    ) -> Result<Option<u16>>
+    pub fn evict_warm_region<B: BackingStore>(&mut self, backing: &mut B) -> Result<Option<u16>>
     where
         M: MemoryRegion,
     {
@@ -520,11 +502,7 @@ impl<M: MemoryRegion> RegionDirectory<M> {
         Ok(())
     }
 
-    pub fn load_region<B: BackingStore>(
-        &mut self,
-        region_id: u16,
-        store: &mut B,
-    ) -> Result<()>
+    pub fn load_region<B: BackingStore>(&mut self, region_id: u16, store: &mut B) -> Result<()>
     where
         M: MemoryRegion,
     {
@@ -613,7 +591,8 @@ impl<M: MemoryRegion> RegionDirectory<M> {
     }
 
     pub fn destroy_region(&mut self, region_id: u16) -> Result<()> {
-        let slot = self.regions
+        let slot = self
+            .regions
             .get_mut(region_id as usize)
             .ok_or(TvmError::RegionNotFound(region_id))?;
         if slot.is_none() {
@@ -666,19 +645,17 @@ impl<M: MemoryRegion> RegionDirectory<M> {
     pub fn read(&self, handle: Handle, buf: &mut [u8]) -> Result<()> {
         let entry = self.validate(handle)?;
         let memory = entry.memory.as_ref().ok_or(TvmError::NotResident)?;
-        let end = handle.offset
-            .checked_add(buf.len() as u32)
-            .ok_or_else(|| {
-                crate::error::set_last_error_context(crate::error::ErrorContext {
-                    region_id: Some(handle.region_id),
-                    generation: Some(handle.generation),
-                    offset: Some(handle.offset),
-                    len: Some(buf.len() as u32),
-                    note: Some("read: offset+len overflow u32"),
-                    ..Default::default()
-                });
-                TvmError::OutOfBounds
-            })?;
+        let end = handle.offset.checked_add(buf.len() as u32).ok_or_else(|| {
+            crate::error::set_last_error_context(crate::error::ErrorContext {
+                region_id: Some(handle.region_id),
+                generation: Some(handle.generation),
+                offset: Some(handle.offset),
+                len: Some(buf.len() as u32),
+                note: Some("read: offset+len overflow u32"),
+                ..Default::default()
+            });
+            TvmError::OutOfBounds
+        })?;
         if end > entry.meta.capacity {
             crate::error::set_last_error_context(crate::error::ErrorContext {
                 region_id: Some(handle.region_id),
@@ -698,7 +675,8 @@ impl<M: MemoryRegion> RegionDirectory<M> {
     pub fn write(&mut self, handle: Handle, data: &[u8]) -> Result<()> {
         let entry = self.validate_mut(handle)?;
         let memory = entry.memory.as_mut().ok_or(TvmError::NotResident)?;
-        let end = handle.offset
+        let end = handle
+            .offset
             .checked_add(data.len() as u32)
             .ok_or(TvmError::OutOfBounds)?;
         if end > entry.meta.capacity {
