@@ -43,6 +43,9 @@
 //! scoring callback — both fit cleanly because all routing already
 //! happens here.
 
+use alloc::vec;
+use alloc::vec::Vec;
+
 use tvm_core::{Handle, Region, RegionKind, Result, TvmError, TvmFacade};
 
 use crate::facade::GuestTvm;

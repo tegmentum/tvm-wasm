@@ -6,7 +6,8 @@
 //! multi-memory dispatch is done by separate generated WAT helper
 //! functions which the workload calls when reading/writing bytes.
 
-use std::collections::HashMap;
+use alloc::vec;
+use alloc::vec::Vec;
 use tvm_core::{
     AllocatorKind, Handle, HandleRemap, PlacementPolicy, Region, RegionAllocator, RegionKind,
     Residency, Result, TvmError,
@@ -210,7 +211,10 @@ impl GuestDirectory {
         // Walk blocks in ascending order; pack each at the next
         // available cursor. Source/destination overlap is fine —
         // wasm memory.copy handles direction.
-        let mut mapping: HashMap<u32, u32> = HashMap::with_capacity(blocks.len());
+        // hashbrown::HashMap so this works in both std and no_std modes
+        // (matches the field type of HandleRemap after U2).
+        let mut mapping: hashbrown::HashMap<u32, u32> =
+            hashbrown::HashMap::with_capacity(blocks.len());
         let mut new_blocks: Vec<(u32, u32)> = Vec::with_capacity(blocks.len());
         let mut cursor: u32 = 0;
         for (old_off, size) in &blocks {

@@ -11,46 +11,17 @@ use crate::policy::PlacementPolicy;
 use crate::region::{Region, RegionKind};
 use crate::residency::Residency;
 
-pub trait MemoryRegion {
-    fn len(&self) -> u32;
-    fn read(&self, offset: u32, buf: &mut [u8]) -> Result<()>;
-    fn write(&mut self, offset: u32, buf: &[u8]) -> Result<()>;
-    fn snapshot(&self) -> Vec<u8>;
-    fn restore(bytes: Vec<u8>) -> Self
-    where
-        Self: Sized;
-}
+// MemoryRegion + HandleRemap moved to `crate::memory_region` so
+// they're available without the `std` feature (U2 of
+// PLAN-tvm-convergence.md). Re-import them here for use in this
+// module's RegionDirectory impl.
+pub use crate::memory_region::{HandleRemap, MemoryRegion};
 
 pub struct RegionEntry<M> {
     pub meta: Region,
     pub memory: Option<M>,
     pub metrics: RegionMetrics,
     pub allocator: RegionAllocator,
-}
-
-/// Mapping from old handles to new handles after compaction. Returned by
-/// `compact_region`; callers must use `migrate` to rewrite any handles they
-/// hold into the region. Old-generation handles fail validation immediately.
-#[derive(Debug, Clone)]
-pub struct HandleRemap {
-    pub region_id: u16,
-    pub old_generation: u16,
-    pub new_generation: u16,
-    pub mapping: HashMap<u32, u32>,
-}
-
-impl HandleRemap {
-    pub fn migrate(&self, h: Handle) -> Option<Handle> {
-        if h.region_id != self.region_id || h.generation != self.old_generation {
-            return None;
-        }
-        let new_offset = self.mapping.get(&h.offset)?;
-        Some(Handle {
-            region_id: h.region_id,
-            generation: self.new_generation,
-            offset: *new_offset,
-        })
-    }
 }
 
 pub struct RegionDirectory<M> {
@@ -259,7 +230,8 @@ impl<M: MemoryRegion> RegionDirectory<M> {
 
         let memory = entry.memory.as_ref().ok_or(TvmError::NotResident)?;
         let mut new_data = vec![0u8; entry.meta.capacity as usize];
-        let mut mapping = HashMap::with_capacity(blocks.len());
+        let mut mapping: hashbrown::HashMap<u32, u32> =
+            hashbrown::HashMap::with_capacity(blocks.len());
         let mut new_blocks = Vec::with_capacity(blocks.len());
         let mut cursor = 0u32;
         for (old_off, size) in blocks {

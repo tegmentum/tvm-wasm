@@ -68,22 +68,33 @@
 //!   WAT helper functions that ARE multi-memory-aware. Rust calls them
 //!   via plain function calls.
 
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+
 pub use tvm_core::{
     AllocatorKind, BumpAllocator, FreelistAllocator, Handle, PlacementPolicy, RegionAllocator,
     RegionKind, Residency, Result, SlabAllocator, TvmError, TvmFacade, TvmSpill,
 };
 
 mod directory;
+// dispatch + module + wasi_spill emit WAT template strings (Rust
+// `String`-based codegen). Host-only.
+#[cfg(feature = "std")]
 pub(crate) mod dispatch;
 mod facade;
+#[cfg(feature = "std")]
 mod module;
 mod multi;
+#[cfg(feature = "std")]
 pub mod wasi_spill;
 
 pub use directory::{GuestDirectory, Pool};
 pub use facade::{Dispatch, FnDispatch, GuestTvm};
+#[cfg(feature = "std")]
 pub use module::{tvm_guest_mm_module_template, ModuleParams};
 pub use multi::{MultiGuestTvm, ShardId};
+#[cfg(feature = "std")]
 pub use wasi_spill::{emit_wasi_spill_helpers, tvm_guest_mm_module_with_wasi_spill};
 
 /// Default number of pools per generated module. 64 × 4 GiB = 256 GiB

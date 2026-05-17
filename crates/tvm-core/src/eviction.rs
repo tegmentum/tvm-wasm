@@ -94,7 +94,7 @@ pub(crate) type EvictCandidate = (u16, u32);
 /// closure operating on [`EvictCandidate`]s.
 pub(crate) fn within_tier_cmp(
     w: WithinTier,
-) -> fn(&EvictCandidate, &EvictCandidate) -> std::cmp::Ordering {
+) -> fn(&EvictCandidate, &EvictCandidate) -> core::cmp::Ordering {
     match w {
         WithinTier::LargestFirst => |a, b| b.1.cmp(&a.1),
         WithinTier::SmallestFirst => |a, b| a.1.cmp(&b.1),

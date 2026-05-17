@@ -1,3 +1,5 @@
+use alloc::string::String;
+
 #[derive(Debug, thiserror::Error)]
 pub enum TvmError {
     #[error("region not found: id={0}")]
@@ -20,11 +22,48 @@ pub enum TvmError {
     PolicyViolation,
 }
 
-/// Last error context. Populated by error sites with enough information to
-/// debug what went wrong (which region, what offset, how big a request).
-/// Read via [`take_last_error_context`] after an error is observed.
+pub type Result<T> = core::result::Result<T, TvmError>;
+
+// ErrorContext and the thread_local!-backed context-passing surface
+// require libstd (`thread_local!` is std-only). Gated behind the
+// `std` feature so the no_std subset of the crate doesn't pull them
+// in. Guest consumers can still construct `TvmError` and inspect
+// it; they just can't use the per-thread last-error context.
+#[cfg(feature = "std")]
+mod context {
+    use super::ErrorContext;
+
+    std::thread_local! {
+        static LAST_ERROR_CONTEXT: std::cell::RefCell<Option<ErrorContext>> =
+            std::cell::RefCell::new(None);
+    }
+
+    /// Set the per-thread last-error context. Called internally by
+    /// error sites; users typically don't call this directly.
+    pub fn set_last_error_context(ctx: ErrorContext) {
+        LAST_ERROR_CONTEXT.with(|cell| *cell.borrow_mut() = Some(ctx));
+    }
+
+    /// Take and clear the per-thread last-error context. Returns
+    /// whatever was last recorded for *this thread*, or `None` if
+    /// no error site has fired since the last call.
+    pub fn take_last_error_context() -> Option<ErrorContext> {
+        LAST_ERROR_CONTEXT.with(|cell| cell.borrow_mut().take())
+    }
+}
+
+#[cfg(feature = "std")]
+pub use context::{set_last_error_context, take_last_error_context};
+
+/// Last error context. Populated by error sites with enough
+/// information to debug what went wrong (which region, what offset,
+/// how big a request). Read via [`take_last_error_context`] after an
+/// error is observed (std-only).
 ///
-/// Thread-local — each thread gets its own context. Cleared on take.
+/// The struct itself is always defined so it can appear in type
+/// signatures regardless of feature gating, but its consumers
+/// (`set_last_error_context` / `take_last_error_context`) require
+/// `std`.
 #[derive(Clone, Debug, Default)]
 pub struct ErrorContext {
     pub region_id: Option<u16>,
@@ -73,33 +112,3 @@ impl core::fmt::Display for ErrorContext {
         write!(f, "]")
     }
 }
-
-std::thread_local! {
-    static LAST_ERROR_CONTEXT: std::cell::RefCell<Option<ErrorContext>> =
-        std::cell::RefCell::new(None);
-}
-
-/// Set the per-thread last-error context. Called internally by error
-/// sites; users typically don't call this directly.
-pub fn set_last_error_context(ctx: ErrorContext) {
-    LAST_ERROR_CONTEXT.with(|cell| *cell.borrow_mut() = Some(ctx));
-}
-
-/// Take and clear the per-thread last-error context. Returns whatever
-/// was last recorded for *this thread*, or `None` if no error site has
-/// fired since the last call.
-///
-/// ```ignore
-/// match host.write_bytes(handle, &data) {
-///     Ok(()) => { /* fine */ }
-///     Err(e) => {
-///         let ctx = tvm_core::take_last_error_context();
-///         eprintln!("write failed: {} {:?}", e, ctx);
-///     }
-/// }
-/// ```
-pub fn take_last_error_context() -> Option<ErrorContext> {
-    LAST_ERROR_CONTEXT.with(|cell| cell.borrow_mut().take())
-}
-
-pub type Result<T> = std::result::Result<T, TvmError>;

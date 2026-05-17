@@ -23,6 +23,9 @@
 //! //   - guest-side GuestTvm
 //! ```
 
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+
 use tvm_core::{AllocatorKind, Handle, Region, RegionKind, Result, TvmError, TvmFacade};
 
 use crate::directory::{GuestDirectory, Pool};

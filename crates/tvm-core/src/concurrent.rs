@@ -337,7 +337,8 @@ impl<M: MemoryRegion + Send> ConcurrentDirectory<M> {
             .ok_or(TvmError::UnsupportedAllocator)?;
         let memory = entry.memory.as_ref().ok_or(TvmError::NotResident)?;
         let mut new_data = vec![0u8; entry.meta.capacity as usize];
-        let mut mapping = HashMap::with_capacity(blocks.len());
+        let mut mapping: hashbrown::HashMap<u32, u32> =
+            hashbrown::HashMap::with_capacity(blocks.len());
         let mut new_blocks = Vec::with_capacity(blocks.len());
         let mut cursor = 0u32;
         for (old_off, size) in blocks {

@@ -7,14 +7,32 @@ repository.workspace = true
 
 [dependencies]
 thiserror = { workspace = true }
+# hashbrown gives us a HashMap that compiles in both std and no_std
+# modes. Replaces `std::collections::HashMap` in directory.rs so
+# the single-threaded RegionDirectory works for guest consumers.
+hashbrown = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
 
 [features]
-default = ["metrics"]
+default = ["std", "metrics"]
 # When enabled, every read/write/alloc fires an atomic counter increment.
 # Disable for maximum throughput — saves 5–20ns per call on Apple Silicon
 # (5–10ns of `lock add` on x86), at the cost of losing per-region traffic
 # observability via DiagnosticsHost::bytes_read_count etc.
 metrics = []
+# Pulls in libstd. Required for host-only modules:
+#   - concurrent (std::sync::{Arc, Mutex, RwLock})
+#   - shared (same)
+#   - backing (std::fs file IO)
+#   - debug (std::io::Write)
+#   - error::ErrorContext (std::thread_local!)
+#   - facade (depends on the above)
+#   - async_backing, external
+# With std off, only the pure-data + single-threaded subset is
+# available: Region, RegionKind, Residency, Handle, PlacementPolicy,
+# AllocatorKind, RegionMetrics, EvictionPolicy, EvictionReport,
+# TvmError (no thread_local context), Result, BumpAllocator,
+# FreelistAllocator, SlabAllocator, RegionDirectory.
+std = []
