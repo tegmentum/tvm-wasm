@@ -43,6 +43,9 @@ use crate::allocator::{AllocatorKind, RegionAllocator};
 use crate::backing::BackingStore;
 use crate::directory::{HandleRemap, MemoryRegion, RegionEntry};
 use crate::error::{Result, TvmError};
+use crate::eviction::{
+    counts_toward_resident, within_tier_cmp, EvictionPolicy, EvictionReport,
+};
 use crate::handle::Handle;
 use crate::metrics::{MetricsSnapshot, RegionMetrics};
 use crate::policy::PlacementPolicy;
@@ -379,6 +382,112 @@ impl<M: MemoryRegion + Send> ConcurrentDirectory<M> {
         entry.metrics.record_promotion();
         entry.metrics.record_fault();
         Ok(())
+    }
+
+    /// Evict regions until total resident bytes (sum of `used` over
+    /// `Hot` + `Warm` regions) is at or below `target`.
+    ///
+    /// Semantics are documented on [`crate::eviction`]. In brief:
+    /// `target` is absolute (a residency ceiling, not a delta);
+    /// pinned and non-spillable regions are silently skipped;
+    /// `target_met=false` is a successful `Ok` outcome, not an
+    /// error.
+    pub fn demote_until<B: BackingStore>(
+        &self,
+        target: u64,
+        policy: EvictionPolicy,
+        store: &mut B,
+    ) -> Result<EvictionReport> {
+        let mut report = EvictionReport::default();
+
+        // Snapshot residency state. `list_regions` clones the meta
+        // structs out, releasing the per-entry locks before we
+        // start spilling — so the spill calls below take their own
+        // locks without nesting.
+        let snapshot = self.list_regions()?;
+        let total_resident = |regs: &[Region]| -> u64 {
+            regs.iter()
+                .filter(|r| counts_toward_resident(r.residency))
+                .map(|r| r.used as u64)
+                .sum()
+        };
+        let mut current = total_resident(&snapshot);
+        if current <= target {
+            report.target_met = true;
+            return Ok(report);
+        }
+
+        // Bucket eligible candidates by tier. Warm before Hot
+        // ("coldest first") so we touch the colder layer first.
+        // External and Cold contribute 0 to resident bytes and are
+        // never visited. Pinned / non-spillable are filtered here
+        // — and again at the spill site (race-safe).
+        let EvictionPolicy::ColdestFirst { within_tier } = policy;
+        let mut warm: Vec<(u16, u32)> = Vec::new();
+        let mut hot: Vec<(u16, u32)> = Vec::new();
+        for r in &snapshot {
+            if r.pinned || !r.spillable {
+                continue;
+            }
+            match r.residency {
+                Residency::Warm => warm.push((r.id, r.used)),
+                Residency::Hot => hot.push((r.id, r.used)),
+                _ => {}
+            }
+        }
+        let cmp = within_tier_cmp(within_tier);
+        warm.sort_by(cmp);
+        hot.sort_by(cmp);
+
+        for (id, used) in warm.into_iter().chain(hot.into_iter()) {
+            if current <= target {
+                break;
+            }
+            // `spill_region` may legitimately fail with `Pinned`,
+            // `PolicyViolation`, or `NotResident` if another thread
+            // mutated state between our snapshot and the call.
+            // These are not propagated as errors — they just mean
+            // the candidate is no longer viable; continue.
+            match self.spill_region(id, store) {
+                Ok(()) => {
+                    current = current.saturating_sub(used as u64);
+                    report.bytes_freed = report.bytes_freed.saturating_add(used as u64);
+                    report.regions_spilled = report.regions_spilled.saturating_add(1);
+                }
+                Err(TvmError::Pinned)
+                | Err(TvmError::PolicyViolation)
+                | Err(TvmError::NotResident)
+                | Err(TvmError::RegionNotFound(_)) => {}
+                Err(e) => return Err(e),
+            }
+        }
+
+        report.target_met = current <= target;
+        Ok(report)
+    }
+
+    /// Try `alloc(region_id, size)`; on `AllocationFailed`, run
+    /// `demote_until(target, policy, store)` once, then retry the
+    /// alloc. Returns the second alloc's error if it still fails
+    /// (no further retries). Errors other than `AllocationFailed`
+    /// (e.g. `RegionNotFound`, `StaleHandle`) short-circuit
+    /// without invoking eviction.
+    pub fn alloc_or_demote<B: BackingStore>(
+        &self,
+        region_id: u16,
+        size: u32,
+        target: u64,
+        policy: EvictionPolicy,
+        store: &mut B,
+    ) -> Result<Handle> {
+        match self.alloc(region_id, size) {
+            Ok(h) => Ok(h),
+            Err(TvmError::AllocationFailed) => {
+                self.demote_until(target, policy, store)?;
+                self.alloc(region_id, size)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     fn entry_arc(&self, region_id: u16) -> Result<SharedEntry<M>> {

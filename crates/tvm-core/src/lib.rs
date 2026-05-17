@@ -33,6 +33,7 @@ pub mod debug;
 pub mod directory;
 mod directory_slices;
 pub mod error;
+pub mod eviction;
 pub mod external;
 pub mod facade;
 pub mod handle;
@@ -57,6 +58,7 @@ pub use debug::{
 };
 pub use directory::{HandleRemap, MemoryRegion, RegionDirectory, RegionEntry};
 pub use error::{set_last_error_context, take_last_error_context, ErrorContext, Result, TvmError};
+pub use eviction::{EvictionPolicy, EvictionReport, WithinTier};
 pub use facade::{TvmFacade, TvmSpill};
 pub use handle::Handle;
 pub use metrics::{MetricsSnapshot, RegionMetrics};
