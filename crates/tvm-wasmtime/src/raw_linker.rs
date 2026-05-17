@@ -29,6 +29,7 @@ use tvm_core::{Handle, TvmError};
 use wasmtime::{Caller, Extern, Linker, Memory};
 
 use crate::host::TvmHost;
+use crate::shared_host::SharedTvmHost;
 
 pub const ERR_OK: i32 = 0;
 pub const ERR_REGION_NOT_FOUND: i32 = 1;
@@ -686,6 +687,123 @@ where
 
     // Suppress unused warning when memory name is the default.
     let _ = guest_memory::<T>;
+
+    Ok(())
+}
+
+/// Shared-substrate variant of [`add_raw_imports`] — the **minimal correct
+/// subset** for *cross-store* (cross-actor) region sharing: `tvm.alloc`,
+/// `tvm.write`, `tvm.read` only.
+///
+/// Why a subset, not a drop-in: `add_raw_imports` caches the guest's linear
+/// memory pointer **inside `TvmHost`** (`cached_memory`, per store). Sharing
+/// one `TvmHost` across stores would let store B's raw read use store A's
+/// cached pointer — memory corruption. This variant therefore:
+///
+/// * locks the shared `TvmHost` per call (the directory/region state is the
+///   thing we *want* shared), and
+/// * fetches the guest memory **uncached** every call (never touches
+///   `cached_memory`), so no per-store pointer ever crosses stores.
+///
+/// Trade-offs (honest): loses the raw-path memory-pointer micro-cache for
+/// shared actors; the reducer / `read_gather` / `copy_region` / `last_error`
+/// suite is intentionally **not** provided on the shared path (future work —
+/// each would need the same uncached treatment). A guest that imports only
+/// `tvm.alloc/write/read` links fine against this; one importing the wider
+/// surface should use per-store `add_raw_imports`.
+pub fn add_raw_shared<T>(linker: &mut Linker<T>) -> wasmtime::Result<()>
+where
+    T: AsMut<SharedTvmHost> + Send + 'static,
+{
+    add_raw_shared_with_memory_name(linker, "memory")
+}
+
+/// Same as [`add_raw_shared`], custom guest-memory export name.
+pub fn add_raw_shared_with_memory_name<T>(
+    linker: &mut Linker<T>,
+    memory_name: &'static str,
+) -> wasmtime::Result<()>
+where
+    T: AsMut<SharedTvmHost> + Send + 'static,
+{
+    linker.func_wrap(
+        "tvm",
+        "alloc",
+        |mut caller: Caller<'_, T>, region_id: i32, size: i32| -> i64 {
+            let mut g = caller.data_mut().as_mut().lock();
+            match g.directory.alloc(region_id as u16, size as u32) {
+                Ok(h) => {
+                    g.cache.invalidate(region_id as u16);
+                    h.pack() as i64
+                }
+                Err(e) => {
+                    g.last_raw_error = err_code(&e);
+                    0
+                }
+            }
+        },
+    )?;
+
+    linker.func_wrap(
+        "tvm",
+        "write",
+        move |mut caller: Caller<'_, T>, packed: i64, src_ptr: i32, len: i32| -> i32 {
+            let h = Handle::unpack(packed as u64);
+            let src_off = src_ptr as usize;
+            let required_end = match src_off.checked_add(len as usize) {
+                Some(e) => e,
+                None => return ERR_GUEST_MEMORY,
+            };
+            // Uncached fetch — never write `host.cached_memory` (the
+            // cross-store hazard). Borrow of `caller` ends before the lock.
+            let mem = match guest_memory_named(&mut caller, memory_name) {
+                Some(m) => m,
+                None => return ERR_GUEST_MEMORY,
+            };
+            let size = mem.data_size(&caller) as u64;
+            let base = mem.data_ptr(&caller) as usize;
+            if (required_end as u64) > size {
+                return ERR_GUEST_MEMORY;
+            }
+            let mut g = caller.data_mut().as_mut().lock();
+            // SAFETY: base+required_end bounds-checked vs the live memory
+            // size; with `memory_may_move(false)` the base is stable and the
+            // guest cannot grow its memory mid host-call; `fast_write`
+            // checks the region side.
+            match unsafe { g.fast_write(h, (base as *const u8).add(src_off), len as u32) } {
+                Ok(()) => ERR_OK,
+                Err(e) => err_code(&e),
+            }
+        },
+    )?;
+
+    linker.func_wrap(
+        "tvm",
+        "read",
+        move |mut caller: Caller<'_, T>, packed: i64, dst_ptr: i32, len: i32| -> i32 {
+            let h = Handle::unpack(packed as u64);
+            let dst_off = dst_ptr as usize;
+            let required_end = match dst_off.checked_add(len as usize) {
+                Some(e) => e,
+                None => return ERR_GUEST_MEMORY,
+            };
+            let mem = match guest_memory_named(&mut caller, memory_name) {
+                Some(m) => m,
+                None => return ERR_GUEST_MEMORY,
+            };
+            let size = mem.data_size(&caller) as u64;
+            let base = mem.data_ptr(&caller) as usize;
+            if (required_end as u64) > size {
+                return ERR_GUEST_MEMORY;
+            }
+            let mut g = caller.data_mut().as_mut().lock();
+            // SAFETY: as in `write` above.
+            match unsafe { g.fast_read(h, (base as *mut u8).add(dst_off), len as u32) } {
+                Ok(()) => ERR_OK,
+                Err(e) => err_code(&e),
+            }
+        },
+    )?;
 
     Ok(())
 }

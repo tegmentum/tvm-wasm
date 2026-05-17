@@ -64,7 +64,10 @@ pub use linker::{
     add_concurrent_to_linker, add_shared_to_linker, add_to_linker, add_to_linker_with,
 };
 pub use memory_factory::{RuntimeMemoryRegion, WasmtimeMemoryRegion, WASM_PAGE_SIZE};
-pub use raw_linker::{add_raw_imports, add_raw_imports_with_memory_name};
+pub use raw_linker::{
+    add_raw_imports, add_raw_imports_with_memory_name, add_raw_shared,
+    add_raw_shared_with_memory_name,
+};
 pub use region_view::RegionView;
 pub use runtime_persist::{load_runtime_region, spill_runtime_region};
 pub use shared_host::SharedTvmHost;
