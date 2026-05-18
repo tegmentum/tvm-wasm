@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 
 use crate::allocator::{AllocatorKind, RegionAllocator};
 use crate::async_backing::AsyncBackingStore;

@@ -96,15 +96,15 @@ pub use debug::{
 // RegionDirectory + RegionEntry require std (BackingStore-using
 // methods, file IO). All four were originally in directory.rs;
 // the split happened in U2 of PLAN-tvm-convergence.md.
-pub use memory_region::{HandleRemap, MemoryRegion};
 #[cfg(feature = "std")]
 pub use directory::{RegionDirectory, RegionEntry};
-pub use error::{Result, TvmError};
 #[cfg(feature = "std")]
 pub use error::{set_last_error_context, take_last_error_context, ErrorContext};
+pub use error::{Result, TvmError};
 pub use eviction::{EvictionPolicy, EvictionReport, WithinTier};
 pub use facade::{TvmFacade, TvmSpill};
 pub use handle::Handle;
+pub use memory_region::{HandleRemap, MemoryRegion};
 pub use metrics::{MetricsSnapshot, RegionMetrics};
 pub use policy::PlacementPolicy;
 pub use region::{Region, RegionKind};

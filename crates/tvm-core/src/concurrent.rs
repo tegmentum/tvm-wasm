@@ -36,16 +36,14 @@
 //! taken last (or alone). The outer regions vector lock is always taken
 //! first.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, RwLock};
 
 use crate::allocator::{AllocatorKind, RegionAllocator};
 use crate::backing::BackingStore;
 use crate::directory::{HandleRemap, MemoryRegion, RegionEntry};
 use crate::error::{Result, TvmError};
-use crate::eviction::{
-    counts_toward_resident, within_tier_cmp, EvictionPolicy, EvictionReport,
-};
+use crate::eviction::{counts_toward_resident, within_tier_cmp, EvictionPolicy, EvictionReport};
 use crate::handle::Handle;
 use crate::metrics::{MetricsSnapshot, RegionMetrics};
 use crate::policy::PlacementPolicy;

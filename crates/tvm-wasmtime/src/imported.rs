@@ -307,7 +307,7 @@ pub fn create_imported_in_store(
     kind: tvm_core::RegionKind,
     capacity: u32,
 ) -> tvm_core::Result<u16> {
-    use tvm_core::{AllocatorKind, PlacementPolicy};
+    use tvm_core::PlacementPolicy;
     use wasmtime::AsContextMut;
     let id = {
         let host = store.data_mut();

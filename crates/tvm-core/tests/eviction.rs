@@ -123,7 +123,9 @@ fn demote_until_meets_target_with_cold_regions_only() {
     // the right amount to be freed.
     let (dir, _ids) = dir_with_regions(&[(256, 100), (256, 100), (256, 100)]);
     let mut store = MemBackingStore::default();
-    let report = dir.demote_until(100, policy_largest_first(), &mut store).unwrap();
+    let report = dir
+        .demote_until(100, policy_largest_first(), &mut store)
+        .unwrap();
     assert!(report.target_met, "should meet target=100");
     assert!(total_resident(&dir) <= 100);
     assert!(report.bytes_freed >= 200);
@@ -140,7 +142,9 @@ fn demote_until_walks_through_warm_when_cold_exhausted() {
     // spilled.
     let (dir, _ids) = dir_with_regions(&[(128, 64), (128, 32), (128, 96)]);
     let mut store = MemBackingStore::default();
-    let report = dir.demote_until(0, policy_largest_first(), &mut store).unwrap();
+    let report = dir
+        .demote_until(0, policy_largest_first(), &mut store)
+        .unwrap();
     assert!(report.target_met, "target=0 forces full eviction");
     assert_eq!(total_resident(&dir), 0);
     assert_eq!(report.regions_spilled, 3);
@@ -154,7 +158,9 @@ fn demote_until_skips_pinned() {
     let (dir, ids) = dir_with_pinnable_middle(&[(128, 50), (128, 50), (128, 50)]);
     dir.pin(ids[1]).unwrap();
     let mut store = MemBackingStore::default();
-    let report = dir.demote_until(0, policy_largest_first(), &mut store).unwrap();
+    let report = dir
+        .demote_until(0, policy_largest_first(), &mut store)
+        .unwrap();
     assert!(!report.target_met, "pinned region keeps us above target=0");
     assert_eq!(report.regions_spilled, 2);
     // Pinned region keeps its residency.
@@ -169,9 +175,13 @@ fn demote_until_idempotent() {
     // the same final residency.
     let (dir, _ids) = dir_with_regions(&[(256, 100), (256, 100), (256, 100)]);
     let mut store = MemBackingStore::default();
-    let r1 = dir.demote_until(100, policy_largest_first(), &mut store).unwrap();
+    let r1 = dir
+        .demote_until(100, policy_largest_first(), &mut store)
+        .unwrap();
     let after_first = total_resident(&dir);
-    let r2 = dir.demote_until(100, policy_largest_first(), &mut store).unwrap();
+    let r2 = dir
+        .demote_until(100, policy_largest_first(), &mut store)
+        .unwrap();
     let after_second = total_resident(&dir);
     assert_eq!(after_first, after_second);
     assert!(r1.target_met && r2.target_met);
@@ -189,7 +199,9 @@ fn demote_until_largest_first_within_tier() {
     // 50-region stays resident.
     let (dir, ids) = dir_with_regions(&[(256, 50), (256, 200)]);
     let mut store = MemBackingStore::default();
-    let report = dir.demote_until(100, policy_largest_first(), &mut store).unwrap();
+    let report = dir
+        .demote_until(100, policy_largest_first(), &mut store)
+        .unwrap();
     assert!(report.target_met);
     assert_eq!(report.regions_spilled, 1, "exactly one spill expected");
     assert_eq!(report.bytes_freed, 200);
@@ -222,7 +234,9 @@ fn demote_until_target_already_met_is_noop() {
     // current resident = 60; target = 100 → already below, no work.
     let (dir, _ids) = dir_with_regions(&[(256, 30), (256, 30)]);
     let mut store = MemBackingStore::default();
-    let report = dir.demote_until(100, policy_largest_first(), &mut store).unwrap();
+    let report = dir
+        .demote_until(100, policy_largest_first(), &mut store)
+        .unwrap();
     assert!(report.target_met);
     assert_eq!(report.bytes_freed, 0);
     assert_eq!(report.regions_spilled, 0);

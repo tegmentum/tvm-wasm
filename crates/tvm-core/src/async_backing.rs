@@ -73,7 +73,7 @@ impl<B: BackingStore> AsyncBackingStore for SyncAdapter<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backing::{BackingStore, FileBackingStore};
+    use crate::backing::FileBackingStore;
     use tempfile::tempdir;
 
     // Trivial executor that drives a future to completion on the current

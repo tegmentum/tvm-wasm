@@ -1098,7 +1098,6 @@ fn bench_spill_driven(
     size: u32,
 ) -> anyhow::Result<Vec<Sample>> {
     use tempfile::tempdir;
-    use tvm_core::FileBackingStore;
 
     let resident_budget = size; // resident cap
     let n_tiers = 4u32; // total working set = resident_budget * n_tiers

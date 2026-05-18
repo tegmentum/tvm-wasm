@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
 use tvm_core::async_backing::{AsyncBackingStore, LoadFuture, SpillFuture};
-use tvm_core::{Handle, RegionDirectory, RegionKind, Residency, Result, TvmError, VecBackedRegion};
+use tvm_core::{RegionDirectory, RegionKind, Residency, Result, TvmError, VecBackedRegion};
 
 // ---------- Tiny block-on executor ----------
 

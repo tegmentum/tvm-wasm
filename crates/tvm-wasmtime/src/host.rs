@@ -18,10 +18,9 @@ impl CachedGuestMemory {
 }
 
 use tvm_core::{
-    AllocatorKind, BackingStore, DynBackingStore, FileBackingStore, Handle as CoreHandle,
-    Region as CoreRegion, RegionDirectory, RegionKind as CoreRegionKind,
-    Residency as CoreResidency, ResolveCache, ResolveHit, TvmError as CoreError, TvmFacade,
-    TvmSpill, VecBackedRegion,
+    AllocatorKind, DynBackingStore, FileBackingStore, Handle as CoreHandle, Region as CoreRegion,
+    RegionDirectory, RegionKind as CoreRegionKind, Residency as CoreResidency, ResolveCache,
+    ResolveHit, TvmError as CoreError, TvmFacade, TvmSpill, VecBackedRegion,
 };
 
 /// Size-specialized memcpy. Hot path of `fast_read` / `fast_write`. Inline
