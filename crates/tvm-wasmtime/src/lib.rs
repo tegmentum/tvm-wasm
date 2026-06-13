@@ -47,6 +47,7 @@ pub mod imported;
 pub mod linker;
 pub mod macros;
 pub mod memory_factory;
+pub mod per_actor;
 pub mod prelude;
 pub mod raw_linker;
 pub mod region_view;
@@ -61,9 +62,11 @@ pub use imported::{
     build_imported_setup, build_imported_setup_with_data, create_imported_in_store, ImportedRegion,
 };
 pub use linker::{
-    add_concurrent_to_linker, add_shared_to_linker, add_to_linker, add_to_linker_with,
+    add_concurrent_to_linker, add_per_actor_to_linker, add_shared_to_linker, add_to_linker,
+    add_to_linker_with,
 };
 pub use memory_factory::{RuntimeMemoryRegion, WasmtimeMemoryRegion, WASM_PAGE_SIZE};
+pub use per_actor::{PerActorTvmHost, TvmBudget};
 pub use raw_linker::{
     add_raw_imports, add_raw_imports_with_memory_name, add_raw_shared,
     add_raw_shared_with_memory_name,

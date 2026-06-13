@@ -4,6 +4,7 @@ use crate::bindings::tvm::memory::{bytes, diagnostics, manager, types};
 use crate::bindings::TvmGuest;
 use crate::concurrent_host::ConcurrentTvmHost;
 use crate::host::TvmHost;
+use crate::per_actor::PerActorTvmHost;
 use crate::shared_host::SharedTvmHost;
 
 /// Convenience wrapper for stores whose data implements `AsMut<TvmHost>`.
@@ -40,6 +41,21 @@ pub fn add_concurrent_to_linker<T: AsMut<ConcurrentTvmHost> + Send + 'static>(
         state.as_mut()
     }
     TvmGuest::add_to_linker::<T, HasSelf<ConcurrentTvmHost>>(linker, project::<T>)
+}
+
+/// Convenience wrapper for stores whose data implements
+/// `AsMut<PerActorTvmHost>`. Each store gets its own outstanding-bytes
+/// accounting + overrun flag, while the *inner* `SharedTvmHost` they
+/// each wrap stays a shared substrate — the right shape for embedders
+/// that host *untrusted* actors on a shared directory and want one to
+/// be unable to exhaust the substrate for the others.
+pub fn add_per_actor_to_linker<T: AsMut<PerActorTvmHost> + Send + 'static>(
+    linker: &mut Linker<T>,
+) -> wasmtime::Result<()> {
+    fn project<T: AsMut<PerActorTvmHost>>(state: &mut T) -> &mut PerActorTvmHost {
+        state.as_mut()
+    }
+    TvmGuest::add_to_linker::<T, HasSelf<PerActorTvmHost>>(linker, project::<T>)
 }
 
 /// Generic helper. Use when your store data isn't `AsMut<H>` directly — for
