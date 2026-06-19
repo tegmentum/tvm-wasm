@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.vite/
+test-results/
+playwright-report/
+# Generated build artifact — produced by `cargo run -p tvm-guest-mm --bin gen_guest_wasm`.
+public/tvm-guest.wasm

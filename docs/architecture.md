@@ -150,10 +150,51 @@ embedders who use `BackingStore`; it pops the oldest non-pinned Warm
 region and spills it. The embedder's pressure-handling policy lives
 above TVM, not inside it.
 
-**`tvm-guest-mm` doesn't use the Cold tier**. Pure-guest deployments
-have no I/O capability, so cold regions can't go anywhere. Regions in
-guest-mm are always Hot or Warm (LRU eligibility for application-level
-policy decisions, not for actual eviction).
+**`tvm-guest-mm` doesn't use the Cold tier** *in a bare wasm engine*.
+Pure-guest deployments have no I/O capability, so cold regions can't go
+anywhere. Regions in guest-mm are always Hot or Warm (LRU eligibility for
+application-level policy decisions, not for actual eviction).
+
+### Browser Cold tier (`web/tvm-web`)
+
+A browser embedding *does* have a storage target — the Origin Private File
+System (OPFS) — so the `web/tvm-web` host adds a real Cold tier on top of an
+unmodified guest module. The guest `.wasm` is exactly what
+`tvm-guest-mm` emits: N exported pool memories (`mem0..memN`) plus the
+exported dispatch helpers. Everything else lives in TypeScript:
+
+- **The directory/policy is JS-owned.** `web/tvm-web` ports `GuestDirectory`
+  placement, the `RegionDirectory` residency/LRU machine, and
+  `PlacementPolicy` into TS. It reads/writes pool bytes directly through
+  `WebAssembly.Memory.buffer`, so the guest needs no introspection ABI.
+- **Spill target is OPFS.** A Web Worker holds `FileSystemSyncAccessHandle`s
+  (the only synchronous, high-throughput OPFS path) and stores one file per
+  region snapshot, `region-{id}-gen-{gen}.bin` — the same key shape as the
+  host-side `FileBackingStore`.
+
+Two constraints shape the design and are worth stating plainly:
+
+1. **No transparent fault.** Native wasm loads cannot trap, so a spilled pool
+   cannot be faulted back in mid-access (unlike the host path's
+   `read_or_fault`). The browser Cold tier is therefore **cooperative**: the
+   host spills only unpinned, spillable regions while the guest is quiesced,
+   and the application must `await tvm.promote(region)` before touching a
+   region again. `read`/`write` against a Cold region throw `NotResident`.
+2. **Eviction reclaims address space, not pages.** wasm linear memory cannot
+   shrink, so spilling does not hand pages back to the OS. Its value is that a
+   Cold region's pool span is returned to a free-list and **reused** by a
+   later allocation while the bytes sit safely in OPFS. The resident working
+   set is thus bounded by an LRU byte budget (reuse) rather than by RAM, and
+   total capacity is bounded by the OPFS storage quota.
+
+An optional synchronous load path (`SharedArrayBuffer` + `Atomics.wait`, for a
+guest that must reload inside a tight loop without yielding) is provided as a
+channel primitive; it requires the guest to run in a Web Worker and the page
+to be cross-origin isolated.
+
+This closes the browser scaling gap: addressing already scaled to the module's
+N × 4 GiB, but the *backable* working set was capped by the tab's RAM budget.
+With the OPFS Cold tier it is capped by disk quota instead.
 
 ## Allocators
 

@@ -25,3 +25,31 @@ jobs:
         run: |
           cd examples/guest-demo && cargo build --release --target wasm32-unknown-unknown
           cd ../guest-fast-path && cargo build --release --target wasm32-unknown-unknown
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        if: ${{ !env.ACT }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: generate guest wasm
+        run: cargo run -q -p tvm-guest-mm --bin gen_guest_wasm -- --pools 64 web/tvm-web/public/tvm-guest.wasm
+      - name: install web deps
+        working-directory: web/tvm-web
+        run: npm ci || npm install
+      - name: typecheck
+        working-directory: web/tvm-web
+        run: npm run typecheck
+      - name: unit + integration tests (vitest)
+        working-directory: web/tvm-web
+        run: npm test
+      - name: install playwright chromium
+        working-directory: web/tvm-web
+        run: npx playwright install --with-deps chromium
+      - name: opfs cold-tier e2e (playwright)
+        working-directory: web/tvm-web
+        run: npm run test:e2e

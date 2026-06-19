@@ -32,6 +32,10 @@ anyhow = { workspace = true }
 tvm-test-harness = { path = "../tvm-test-harness" }
 tvm-wasmtime = { path = "../tvm-wasmtime" }
 
+[[bin]]
+name = "gen_guest_wasm"
+required-features = ["std"]
+
 [[bench]]
 name = "guest_mm_dispatch"
 harness = false

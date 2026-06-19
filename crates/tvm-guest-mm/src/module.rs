@@ -173,6 +173,40 @@ mod tests {
     fn module_with_16_pools_compiles() {
         let p = ModuleParams::default();
         let wat = tvm_guest_mm_module_template(&p);
-        wat::parse_str(&wat).expect("must parse with default 16 pools");
+        wat::parse_str(&wat).expect("must parse with default pool count");
+    }
+
+    /// The browser Cold-tier host (`web/tvm-web`) drives the guest purely
+    /// through exported memories + dispatch helpers. Lock that contract:
+    /// every pool memory and the data-plane helpers JS calls must be
+    /// exported under stable names.
+    #[test]
+    fn browser_data_plane_exports_are_stable() {
+        let p = ModuleParams {
+            n_pools: 64,
+            ..ModuleParams::default()
+        };
+        let wat = tvm_guest_mm_module_template(&p);
+        for i in 0..p.n_pools {
+            assert!(
+                wat.contains(&format!("(export \"mem{i}\")")),
+                "pool memory mem{i} must be exported for direct JS buffer access"
+            );
+        }
+        for helper in [
+            "tvm_load_u8",
+            "tvm_load_u32",
+            "tvm_load_i64",
+            "tvm_store_u8",
+            "tvm_store_u32",
+            "tvm_store_i64",
+            "tvm_copy_to_default",
+            "tvm_copy_from_default",
+        ] {
+            assert!(
+                wat.contains(&format!("(export \"{helper}\")")),
+                "dispatch helper {helper} must be exported for the JS data plane"
+            );
+        }
     }
 }
