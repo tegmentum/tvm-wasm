@@ -16,6 +16,9 @@ use crate::error::Result;
 /// guest-side adapters that wrap a wasm linear memory range.
 pub trait MemoryRegion {
     fn len(&self) -> u32;
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
     fn read(&self, offset: u32, buf: &mut [u8]) -> Result<()>;
     fn write(&mut self, offset: u32, buf: &[u8]) -> Result<()>;
     fn snapshot(&self) -> Vec<u8>;

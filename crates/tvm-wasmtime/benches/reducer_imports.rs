@@ -50,7 +50,7 @@ fn time_loop<F: FnMut() -> anyhow::Result<()>>(mut f: F) -> anyhow::Result<Vec<D
     Ok(t)
 }
 
-fn report(label: &str, size: u32, t: &mut Vec<Duration>) {
+fn report(label: &str, size: u32, t: &mut [Duration]) {
     t.sort();
     let mean = t.iter().map(|d| d.as_nanos() as f64).sum::<f64>() / t.len() as f64;
     let p99 = pct(t, 99.0);

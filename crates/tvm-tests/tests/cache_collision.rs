@@ -40,7 +40,7 @@ fn cache_collisions_evict_old_slot() {
 #[test]
 fn cache_lookup_after_collision_returns_correct_data() {
     let mut cache = ResolveCache::new();
-    let mut dir: RegionDirectory<VecBackedRegion> = RegionDirectory::new();
+    let dir: RegionDirectory<VecBackedRegion> = RegionDirectory::new();
 
     // Skip region IDs 0..7 by creating dummies, so the next two regions
     // share slot 0 (id 8 and id 16). Easier: just install hand-crafted

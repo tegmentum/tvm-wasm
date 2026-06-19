@@ -35,7 +35,7 @@ fn build() -> anyhow::Result<(Engine, Module)> {
         max_pages_per_pool: 16,
         user_body: USER_BODY.to_string(),
     };
-    let module = Module::new(&engine, &tvm_guest_mm_module_template(&p))?;
+    let module = Module::new(&engine, tvm_guest_mm_module_template(&p))?;
     Ok((engine, module))
 }
 
@@ -51,7 +51,7 @@ fn instantiate_with_data(data: &[u8]) -> anyhow::Result<(Store<()>, wasmtime::In
 
 fn make_data(len: u32, seed: u8) -> Vec<u8> {
     (0..len)
-        .map(|i| ((i as u32).wrapping_mul(2654435761) as u8 ^ seed))
+        .map(|i| i.wrapping_mul(2654435761) as u8 ^ seed)
         .collect()
 }
 

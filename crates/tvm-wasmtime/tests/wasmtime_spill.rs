@@ -22,8 +22,8 @@ fn wasmtime_memory_round_trips_through_backing_store() -> anyhow::Result<()> {
 
     spill_runtime_region(&region, &store, &mut backing, 7, 1)?;
 
-    // Drop the live region to free the memory slot.
-    drop(region);
+    // Done with the live region; let it go out of scope before reloading.
+    let _ = region;
 
     // Stage 2: load into a freshly minted region.
     let restored: WasmtimeMemoryRegion = load_runtime_region(&mut store, &mut backing, 7, 1)?;

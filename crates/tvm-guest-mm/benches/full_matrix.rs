@@ -222,7 +222,7 @@ const HOST_MM_WAT: &str = r#"
 "#;
 
 fn run_host_mm(size: u32, data: &[u8]) -> anyhow::Result<Vec<Duration>> {
-    let pages = ((size as u64 + 65535) / 65536).max(1) as u32;
+    let pages = (size as u64).div_ceil(65536).max(1) as u32;
     let mut config = Config::new();
     config.wasm_multi_memory(true);
     let engine = Engine::new(&config)?;
@@ -260,7 +260,7 @@ fn run_guest_mm_bulk(size: u32, data: &[u8]) -> anyhow::Result<Vec<Duration>> {
     "#;
     let p = ModuleParams {
         n_pools: 4,
-        initial_pages_per_pool: ((size as u64 + 65535) / 65536).max(1) as u32,
+        initial_pages_per_pool: (size as u64).div_ceil(65536).max(1) as u32,
         max_pages_per_pool: 16,
         user_body: user_body.to_string(),
     };
@@ -305,7 +305,7 @@ fn run_guest_mm_bulk_specialized(size: u32, data: &[u8]) -> anyhow::Result<Vec<D
     "#;
     let p = ModuleParams {
         n_pools: 4,
-        initial_pages_per_pool: ((size as u64 + 65535) / 65536).max(1) as u32,
+        initial_pages_per_pool: (size as u64).div_ceil(65536).max(1) as u32,
         max_pages_per_pool: 16,
         user_body: user_body.to_string(),
     };
@@ -335,7 +335,7 @@ fn run_guest_mm_popcount_simd(size: u32, data: &[u8]) -> anyhow::Result<Vec<Dura
     "#;
     let p = ModuleParams {
         n_pools: 4,
-        initial_pages_per_pool: ((size as u64 + 65535) / 65536).max(1) as u32,
+        initial_pages_per_pool: (size as u64).div_ceil(65536).max(1) as u32,
         max_pages_per_pool: 16,
         user_body: user_body.to_string(),
     };
@@ -375,7 +375,7 @@ fn run_guest_mm_popcount_scalar(size: u32, data: &[u8]) -> anyhow::Result<Vec<Du
     "#;
     let p = ModuleParams {
         n_pools: 4,
-        initial_pages_per_pool: ((size as u64 + 65535) / 65536).max(1) as u32,
+        initial_pages_per_pool: (size as u64).div_ceil(65536).max(1) as u32,
         max_pages_per_pool: 16,
         user_body: user_body.to_string(),
     };
@@ -409,7 +409,7 @@ fn run_guest_mm_simd(size: u32, data: &[u8]) -> anyhow::Result<Vec<Duration>> {
     "#;
     let p = ModuleParams {
         n_pools: 4,
-        initial_pages_per_pool: ((size as u64 + 65535) / 65536).max(1) as u32,
+        initial_pages_per_pool: (size as u64).div_ceil(65536).max(1) as u32,
         max_pages_per_pool: 16,
         user_body: user_body.to_string(),
     };

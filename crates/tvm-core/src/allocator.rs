@@ -239,11 +239,7 @@ pub struct SlabAllocator {
 
 impl SlabAllocator {
     pub fn new(capacity: u32, class_size: u32) -> Self {
-        let n_slots = if class_size == 0 {
-            0
-        } else {
-            capacity / class_size
-        };
+        let n_slots = capacity.checked_div(class_size).unwrap_or(0);
         // Push slots in reverse so `pop()` hands out offset 0 first.
         let free_slots: Vec<u32> = (0..n_slots).rev().map(|i| i * class_size).collect();
         Self {
@@ -283,7 +279,7 @@ impl SlabAllocator {
     pub fn dealloc(&mut self, offset: u32) -> Result<u32> {
         if self.class_size == 0
             || offset >= self.n_slots * self.class_size
-            || offset % self.class_size != 0
+            || !offset.is_multiple_of(self.class_size)
         {
             return Err(TvmError::OutOfBounds);
         }

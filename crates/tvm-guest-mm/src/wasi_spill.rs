@@ -65,8 +65,7 @@ pub fn emit_wasi_spill_helpers(n_pools: u32) -> String {
     //   [0..len)         : scratch buffer holding the bytes to write
     //   [len..len+8)     : iovec { ptr=0, len=N }
     //   [len+8..len+12)  : nwritten output slot
-    s.push_str(&format!(
-        r#"  (func (export "tvm_spill_to_fd")
+    s.push_str(r#"  (func (export "tvm_spill_to_fd")
         (param $pool i32) (param $src_off i32) (param $len i32) (param $fd i32)
         (result i32) ;; errno (0 = ok)
     ;; Step 1: copy pool bytes into default memory scratch (offset 0).
@@ -97,8 +96,7 @@ pub fn emit_wasi_spill_helpers(n_pools: u32) -> String {
     (call $tvm_copy_from_default (local.get $pool) (local.get $dst_off) (i32.const 0) (local.get $len))
     (i32.const 0))
 
-"#,
-    ));
+"#);
 
     let _ = n_pools; // helpers are pool-agnostic; dispatch happens in tvm_copy_*
     s

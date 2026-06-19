@@ -35,7 +35,7 @@ mod context {
 
     std::thread_local! {
         static LAST_ERROR_CONTEXT: std::cell::RefCell<Option<ErrorContext>> =
-            std::cell::RefCell::new(None);
+            const { std::cell::RefCell::new(None) };
     }
 
     /// Set the per-thread last-error context. Called internally by

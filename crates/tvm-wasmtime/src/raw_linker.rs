@@ -627,7 +627,7 @@ where
               needle_len: i32|
               -> i32 {
             let h = Handle::unpack(packed as u64);
-            if needle_len < 0 || needle_len > 4096 {
+            if !(0..=4096).contains(&needle_len) {
                 return -2;
             }
             let needle_off = needle_ptr as usize;
@@ -1229,7 +1229,7 @@ where
               needle_len: i32|
               -> i32 {
             let h = Handle::unpack(packed as u64);
-            if needle_len < 0 || needle_len > 4096 {
+            if !(0..=4096).contains(&needle_len) {
                 return -2;
             }
             let needle_off = needle_ptr as usize;

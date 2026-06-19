@@ -331,7 +331,7 @@ fn run_tvm_mm_sequential(size: u32, data: &[u8]) -> anyhow::Result<Sample> {
     let engine = enable_multi_memory()?;
     let module = Module::new(&engine, MM_WAT)?;
     // Pre-create two memories sized to comfortably hold our test data.
-    let pages_needed = ((size as u64 + 65535) / 65536).max(1) as u32;
+    let pages_needed = (size as u64).div_ceil(65536).max(1) as u32;
     let mut store = Store::new(&engine, ());
     let mem0 = Memory::new(
         &mut store,
@@ -361,7 +361,7 @@ fn run_tvm_mm_list(size: u32, bytes: &[u8], head_offset: u32) -> anyhow::Result<
     use wasmtime::{Memory, MemoryType};
     let engine = enable_multi_memory()?;
     let module = Module::new(&engine, MM_WAT)?;
-    let pages_needed = ((size as u64 + 65535) / 65536).max(1) as u32;
+    let pages_needed = (size as u64).div_ceil(65536).max(1) as u32;
     let mut store = Store::new(&engine, ());
     let mem0 = Memory::new(
         &mut store,
@@ -397,7 +397,7 @@ fn run_tvm_mm_columnar(
     use wasmtime::{Memory, MemoryType};
     let engine = enable_multi_memory()?;
     let module = Module::new(&engine, MM_WAT)?;
-    let pages_needed = ((size as u64 + 65535) / 65536).max(1) as u32;
+    let pages_needed = (size as u64).div_ceil(65536).max(1) as u32;
     let mut store = Store::new(&engine, ());
     // Each column gets its own imported memory.
     let mem_a = Memory::new(
@@ -1156,7 +1156,7 @@ fn bench_spill_driven(
         let h = store.data_mut().directory.alloc(r, resident_budget)?;
         let packed = (h.region_id as i64) << 48 | (h.generation as i64) << 32 | (h.offset as i64);
         // Write a few bytes so the spill has something real to persist.
-        store.data_mut().directory.write(h, &vec![0xAA; 64])?;
+        store.data_mut().directory.write(h, &[0xAA; 64])?;
         handles.push(packed);
     }
 
@@ -1299,10 +1299,10 @@ fn bench_large_ws(
         handles_bytes.extend_from_slice(&p.to_le_bytes());
     }
     // Grow memory if needed.
-    let needed_pages = ((handles_offset as usize + handles_bytes.len()) + 65535) / 65536;
+    let needed_pages = (handles_offset as usize + handles_bytes.len()).div_ceil(65536);
     let current_size = memory.data_size(&store);
     if current_size < needed_pages * 65536 {
-        let extra = (needed_pages * 65536 - current_size + 65535) / 65536;
+        let extra = (needed_pages * 65536 - current_size).div_ceil(65536);
         memory.grow(&mut store, extra as u64)?;
     }
     memory.write(&mut store, handles_offset as usize, &handles_bytes)?;

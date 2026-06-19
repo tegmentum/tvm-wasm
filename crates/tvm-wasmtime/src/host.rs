@@ -411,7 +411,7 @@ impl TvmHost {
     /// avoid overflow for full-region sums (max value =
     /// 2^32 × 2^30 / 4 = 2^60). `len` must be a multiple of 4.
     pub fn region_sum_u32_le(&mut self, handle: CoreHandle, len: u32) -> Result<u128, CoreError> {
-        if len % 4 != 0 {
+        if !len.is_multiple_of(4) {
             return Err(CoreError::OutOfBounds);
         }
         let bytes = self.directory.region_slice_at(handle, len)?;
@@ -430,7 +430,7 @@ impl TvmHost {
         handle: CoreHandle,
         len: u32,
     ) -> Result<Option<u32>, CoreError> {
-        if len % 4 != 0 {
+        if !len.is_multiple_of(4) {
             return Err(CoreError::OutOfBounds);
         }
         let bytes = self.directory.region_slice_at(handle, len)?;
@@ -605,7 +605,9 @@ impl TvmHost {
     /// directly from the cached region pointer to the supplied raw
     /// destination. Returns Ok on success, an error on bounds/staleness.
     ///
-    /// SAFETY: `dst` must be valid for `len` bytes.
+    /// # Safety
+    ///
+    /// `dst` must be valid for `len` bytes.
     #[inline]
     pub unsafe fn fast_read(
         &mut self,
@@ -643,7 +645,9 @@ impl TvmHost {
 
     /// Symmetric to `fast_read` for writes.
     ///
-    /// SAFETY: `src` must be valid for `len` bytes.
+    /// # Safety
+    ///
+    /// `src` must be valid for `len` bytes.
     #[inline]
     pub unsafe fn fast_write(
         &mut self,

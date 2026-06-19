@@ -884,19 +884,13 @@ fn build_copy_bst(to_default: bool, pool_param: &str, lo: u32, hi: u32) -> Strin
         let (dst_mem, src_mem) = if to_default { (0, lo) } else { (lo, 0) };
         // For pool→default, params are (src_pool, src_off, dst_off, len).
         // For default→pool, params are (dst_pool, dst_off, src_off, len).
-        return if to_default {
-            format!(
-                "(memory.copy {dst} {src} (local.get $dst_off) (local.get $src_off) (local.get $len))\n",
-                dst = dst_mem,
-                src = src_mem,
-            )
-        } else {
-            format!(
-                "(memory.copy {dst} {src} (local.get $dst_off) (local.get $src_off) (local.get $len))\n",
-                dst = dst_mem,
-                src = src_mem,
-            )
-        };
+        // The emitted instruction is identical either way; direction is
+        // already encoded in (dst_mem, src_mem) above.
+        return format!(
+            "(memory.copy {dst} {src} (local.get $dst_off) (local.get $src_off) (local.get $len))\n",
+            dst = dst_mem,
+            src = src_mem,
+        );
     }
     let mid = lo + (hi - lo) / 2;
     let left = build_copy_bst(to_default, pool_param, lo, mid);
@@ -968,7 +962,7 @@ mod tests {
     fn store_dispatcher_parses_for_various_n() {
         for n in [1u32, 2, 5, 16, 64] {
             let body = emit_store_dispatcher("tvm_store_u32", "i32.store", "i32", n);
-            wat::parse_str(&wrap(n, &body)).expect("parse");
+            wat::parse_str(wrap(n, &body)).expect("parse");
         }
     }
 
@@ -978,7 +972,7 @@ mod tests {
             let mut body = String::new();
             body.push_str(&emit_bulk_copy_dispatcher(n));
             body.push_str(&emit_bulk_copy_from_default_dispatcher(n));
-            wat::parse_str(&wrap(n, &body)).expect("parse");
+            wat::parse_str(wrap(n, &body)).expect("parse");
         }
     }
 
@@ -986,7 +980,7 @@ mod tests {
     fn specialized_copy_helpers_parse() {
         for n in [1u32, 4, 16, 64] {
             let body = emit_specialized_copy_helpers(n);
-            wat::parse_str(&wrap(n, &body)).expect("parse");
+            wat::parse_str(wrap(n, &body)).expect("parse");
         }
     }
 
@@ -1008,7 +1002,7 @@ mod tests {
     fn simd_kernels_parse() {
         for n in [1u32, 4, 16] {
             let body = emit_specialized_simd_kernels(n);
-            wat::parse_str(&wrap(n, &body)).expect("parse");
+            wat::parse_str(wrap(n, &body)).expect("parse");
         }
     }
 
@@ -1017,7 +1011,7 @@ mod tests {
         for n in [1u32, 2, 4, 16, 64] {
             let mut body = emit_specialized_typed_helpers(n);
             body.push_str(&emit_indirect_load_dispatchers(n));
-            wat::parse_str(&wrap(n, &body))
+            wat::parse_str(wrap(n, &body))
                 .unwrap_or_else(|e| panic!("indirect dispatchers n={} failed to parse: {}", n, e));
         }
     }
@@ -1026,7 +1020,7 @@ mod tests {
     fn intra_pool_copy_helpers_parse() {
         for n in [1u32, 2, 4, 16] {
             let body = emit_specialized_intra_pool_copy(n);
-            wat::parse_str(&wrap(n, &body)).expect("parse");
+            wat::parse_str(wrap(n, &body)).expect("parse");
         }
     }
 
@@ -1034,7 +1028,7 @@ mod tests {
     fn specialized_typed_helpers_parse() {
         for n in [1u32, 2, 4, 16] {
             let body = emit_specialized_typed_helpers(n);
-            wat::parse_str(&wrap(n, &body)).expect("parse");
+            wat::parse_str(wrap(n, &body)).expect("parse");
         }
     }
 
@@ -1042,7 +1036,7 @@ mod tests {
     fn simd_reducers_parse() {
         for n in [1u32, 2, 4, 8] {
             let body = emit_specialized_simd_reducers(n);
-            wat::parse_str(&wrap(n, &body)).unwrap_or_else(|e| {
+            wat::parse_str(wrap(n, &body)).unwrap_or_else(|e| {
                 panic!(
                     "simd reducers n={} failed to parse: {}\n--- module ---\n{}",
                     n,

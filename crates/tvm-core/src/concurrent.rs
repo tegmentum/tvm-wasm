@@ -438,7 +438,7 @@ impl<M: MemoryRegion + Send> ConcurrentDirectory<M> {
         warm.sort_by(cmp);
         hot.sort_by(cmp);
 
-        for (id, used) in warm.into_iter().chain(hot.into_iter()) {
+        for (id, used) in warm.into_iter().chain(hot) {
             if current <= target {
                 break;
             }

@@ -23,7 +23,7 @@ fn intra_pool_copy_slides_live_data() -> anyhow::Result<()> {
         max_pages_per_pool: 16,
         user_body: USER_BODY.to_string(),
     };
-    let module = Module::new(&engine, &tvm_guest_mm_module_template(&p))?;
+    let module = Module::new(&engine, tvm_guest_mm_module_template(&p))?;
     let linker: Linker<()> = Linker::new(&engine);
     let mut store = Store::new(&engine, ());
     let instance = linker.instantiate(&mut store, &module)?;
@@ -76,7 +76,7 @@ fn intra_pool_copy_handles_overlap() -> anyhow::Result<()> {
         max_pages_per_pool: 16,
         user_body: USER_BODY.to_string(),
     };
-    let module = Module::new(&engine, &tvm_guest_mm_module_template(&p))?;
+    let module = Module::new(&engine, tvm_guest_mm_module_template(&p))?;
     let linker: Linker<()> = Linker::new(&engine);
     let mut store = Store::new(&engine, ());
     let instance = linker.instantiate(&mut store, &module)?;
@@ -96,7 +96,7 @@ fn intra_pool_copy_handles_overlap() -> anyhow::Result<()> {
     for i in 0..16i32 {
         assert_eq!(
             read.call(&mut store, 108 + i)?,
-            i as i32,
+            i,
             "destination byte at +{i}"
         );
     }

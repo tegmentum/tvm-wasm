@@ -230,7 +230,7 @@ impl GuestTvm {
         // handle.offset. Both are bounds-checked against region size
         // by directory.resolve.
         let (pool, abs) = self.directory.resolve(handle)?;
-        let base = abs.checked_sub(handle.offset).unwrap_or(0);
+        let base = abs.saturating_sub(handle.offset);
         self.cache = ResolveCache {
             region_id: handle.region_id,
             generation: handle.generation,
@@ -296,6 +296,16 @@ mod tests {
     // pool. Lets us unit-test the facade without a wasm runtime.
     static STUB_POOLS: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
 
+    // `STUB_POOLS` is process-global shared state and `build_guest` clears
+    // it. Cargo runs tests in parallel, so without serialization one test's
+    // `build_guest` can wipe the pools between another test's write and read.
+    // Each test holds this guard for its whole body. Poison-tolerant so a
+    // panic in one test doesn't cascade into the others.
+    static TEST_GUARD: Mutex<()> = Mutex::new(());
+    fn lock_test() -> std::sync::MutexGuard<'static, ()> {
+        TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn stub_read(pool: u32, off: u32, dst: &mut [u8]) -> Result<()> {
         let pools = STUB_POOLS.lock().unwrap();
         let p = &pools[pool as usize];
@@ -356,6 +366,7 @@ mod tests {
 
     #[test]
     fn facade_round_trip() {
+        let _guard = lock_test();
         let mut g = build_guest(4, 4096);
         let r = g.create_region(RegionKind::HotHeap, 1024).unwrap();
         let h = g.alloc(r, 16).unwrap();
@@ -367,6 +378,7 @@ mod tests {
 
     #[test]
     fn with_default_allocator_freelist_creates_compactable_regions() {
+        let _guard = lock_test();
         let mut pools = STUB_POOLS.lock().unwrap();
         pools.clear();
         for _ in 0..2 {
@@ -396,6 +408,7 @@ mod tests {
 
     #[test]
     fn resolve_cache_hits_on_repeat_access() {
+        let _guard = lock_test();
         // Indirect verification: same-region reads are fast and
         // correct. Hard to assert "cache hit" without exposing
         // counters; instead we assert correctness across a sequence

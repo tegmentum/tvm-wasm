@@ -35,6 +35,16 @@ use tvm_core::{
 };
 use wasmtime::{AsContext, AsContextMut, Memory, MemoryType, StoreContextMut};
 
+/// Configured `(engine, store, linker, payload)` returned by the
+/// imported-region setup helpers. `T` is the per-region payload the helper
+/// hands back — [`Handle`]s when data was written, or raw region ids.
+pub type ImportedSetup<T> = wasmtime::Result<(
+    wasmtime::Engine,
+    wasmtime::Store<crate::TvmHost>,
+    wasmtime::Linker<crate::TvmHost>,
+    Vec<T>,
+)>;
+
 /// One imported-memory region: meta + allocator + the underlying wasmtime
 /// memory. Mirrors `RegionEntry<M>` but for the imported case.
 pub struct ImportedRegion {
@@ -57,7 +67,7 @@ impl ImportedRegion {
         policy: PlacementPolicy,
     ) -> Result<Self> {
         const PAGE: u64 = 65_536;
-        let pages = ((capacity as u64 + PAGE - 1) / PAGE).max(1) as u32;
+        let pages = (capacity as u64).div_ceil(PAGE).max(1) as u32;
         // Bind max == min: the region's capacity is fixed at creation
         // time and never grows. Telling wasmtime this lets the JIT fold
         // bounds checks against a constant, and combined with the
@@ -211,12 +221,7 @@ pub fn build_imported_setup_with_data(
     payloads: &[&[u8]],
     kind: tvm_core::RegionKind,
     extra_capacity: u32,
-) -> wasmtime::Result<(
-    wasmtime::Engine,
-    wasmtime::Store<crate::TvmHost>,
-    wasmtime::Linker<crate::TvmHost>,
-    Vec<tvm_core::Handle>,
-)> {
+) -> ImportedSetup<tvm_core::Handle> {
     let config = crate::engine_config::imported_region_engine_config();
     let engine = wasmtime::Engine::new(&config)?;
     let host = crate::TvmHost::new();
@@ -264,12 +269,7 @@ pub fn build_imported_setup(
     n_regions: u32,
     region_capacity: u32,
     kind: tvm_core::RegionKind,
-) -> wasmtime::Result<(
-    wasmtime::Engine,
-    wasmtime::Store<crate::TvmHost>,
-    wasmtime::Linker<crate::TvmHost>,
-    Vec<u16>,
-)> {
+) -> ImportedSetup<u16> {
     let config = crate::engine_config::imported_region_engine_config();
     let engine = wasmtime::Engine::new(&config)?;
     let host = crate::TvmHost::new();

@@ -13,7 +13,7 @@ use crate::residency::Residency;
 const CACHE_SLOTS: usize = 8;
 const CACHE_MASK: u16 = (CACHE_SLOTS - 1) as u16;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 struct CacheSlot {
     valid: bool,
     region_id: u16,
@@ -26,20 +26,6 @@ struct CacheSlot {
     /// Null if the cache slot was installed without a data pointer.
     data_ptr: usize,
     data_len: u32,
-}
-
-impl Default for CacheSlot {
-    fn default() -> Self {
-        Self {
-            valid: false,
-            region_id: 0,
-            generation: 0,
-            capacity: 0,
-            residency_hot: false,
-            data_ptr: 0,
-            data_len: 0,
-        }
-    }
 }
 
 #[derive(Debug, Default)]

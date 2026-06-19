@@ -80,12 +80,7 @@ pub fn tvm_mm_setup(
     _wat: &str,
     payloads: &[&[u8]],
     kind: tvm_core::RegionKind,
-) -> wasmtime::Result<(
-    wasmtime::Engine,
-    wasmtime::Store<crate::TvmHost>,
-    wasmtime::Linker<crate::TvmHost>,
-    Vec<tvm_core::Handle>,
-)> {
+) -> crate::imported::ImportedSetup<tvm_core::Handle> {
     crate::imported::build_imported_setup_with_data(payloads, kind, 4096)
 }
 

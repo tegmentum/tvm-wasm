@@ -47,7 +47,7 @@ fn time_loop<F: FnMut() -> anyhow::Result<()>>(mut f: F) -> anyhow::Result<Vec<D
     Ok(t)
 }
 
-fn report(label: &str, size: u32, t: &mut Vec<Duration>) {
+fn report(label: &str, size: u32, t: &mut [Duration]) {
     t.sort();
     let mean_ns = t.iter().map(|d| d.as_nanos() as f64).sum::<f64>() / t.len() as f64;
     let p99 = stats::pct(t, 99.0);
@@ -111,7 +111,7 @@ fn run_guest_mm_bulk(size: u32, data: &[u8], n_pools: u32) -> anyhow::Result<Vec
     "#;
     let p = ModuleParams {
         n_pools,
-        initial_pages_per_pool: ((size as u32 + 65535) / 65536).max(1),
+        initial_pages_per_pool: size.div_ceil(65536).max(1),
         max_pages_per_pool: 16,
         user_body: user_body.to_string(),
     };
@@ -154,7 +154,7 @@ fn run_guest_mm(size: u32, data: &[u8], n_pools: u32) -> anyhow::Result<Vec<Dura
     "#;
     let p = ModuleParams {
         n_pools,
-        initial_pages_per_pool: ((size as u32 + 65535) / 65536).max(1),
+        initial_pages_per_pool: size.div_ceil(65536).max(1),
         max_pages_per_pool: 16,
         user_body: user_body.to_string(),
     };
@@ -274,7 +274,7 @@ fn run_dispatch_named(
     );
     let p = ModuleParams {
         n_pools,
-        initial_pages_per_pool: ((size as u32 + 65535) / 65536).max(1),
+        initial_pages_per_pool: size.div_ceil(65536).max(1),
         max_pages_per_pool: 16,
         user_body,
     };

@@ -179,10 +179,6 @@ fn async_path_actually_yields() -> Result<()> {
     // Verify the async path goes through Pending → poll → Ready, not just
     // sync-collapse. Counts how many times the executor polled the future.
 
-    struct CountingPoller {
-        polls: u32,
-    }
-
     fn drive_count<F: Future>(mut fut: F) -> (F::Output, u32) {
         let waker = Waker::noop().clone();
         let mut cx = Context::from_waker(&waker);
@@ -195,8 +191,6 @@ fn async_path_actually_yields() -> Result<()> {
             }
         }
     }
-    let _ = CountingPoller { polls: 0 };
-
     let mut dir: RegionDirectory<VecBackedRegion> = RegionDirectory::new();
     let r = dir
         .create_region(RegionKind::ObjectArena, 32, VecBackedRegion::new(32))

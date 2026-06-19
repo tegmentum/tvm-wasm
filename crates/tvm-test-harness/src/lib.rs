@@ -155,9 +155,7 @@ pub fn mann_whitney_u(a: &[u128], b: &[u128]) -> f64 {
             j += 1;
         }
         let avg_rank = ((i + j) as f64) / 2.0 + 1.0;
-        for k in i..=j {
-            ranks[k] = avg_rank;
-        }
+        ranks[i..=j].fill(avg_rank);
         i = j + 1;
     }
     let mut rank_sum_a = 0.0f64;

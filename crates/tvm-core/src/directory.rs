@@ -587,7 +587,7 @@ impl<M: MemoryRegion> RegionDirectory<M> {
         let entry = self.entry_mut(region_id)?;
         let cap = entry.meta.capacity;
         let used = entry.allocator.used();
-        let offset = entry.allocator.alloc(size, align).map_err(|e| {
+        let offset = entry.allocator.alloc(size, align).inspect_err(|_e| {
             crate::error::set_last_error_context(crate::error::ErrorContext {
                 region_id: Some(region_id),
                 len: Some(size),
@@ -596,7 +596,6 @@ impl<M: MemoryRegion> RegionDirectory<M> {
                 ..Default::default()
             });
             let _ = used;
-            e
         })?;
         entry.meta.used = entry.allocator.used();
         entry.metrics.record_alloc(size as u64);

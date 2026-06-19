@@ -208,8 +208,8 @@ fn typed_load_against_host_seeded_bytes() -> Result<()> {
     let (mut store, packed) = setup_with_region(64)?;
     let h = tvm_core::Handle::unpack(packed as u64);
     let mut bytes = [0u8; 64];
-    for i in 0..64 {
-        bytes[i] = (i as u8).wrapping_mul(7).wrapping_add(0x42);
+    for (i, b) in bytes.iter_mut().enumerate() {
+        *b = (i as u8).wrapping_mul(7).wrapping_add(0x42);
     }
     store.data_mut().write_bytes(h, &bytes)?;
 

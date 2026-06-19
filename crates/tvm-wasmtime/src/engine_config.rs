@@ -62,7 +62,7 @@ pub fn pooling_imported_region_engine_config(n_regions: u32, region_bytes: u32) 
     use wasmtime::{InstanceAllocationStrategy, PoolingAllocationConfig};
 
     const PAGE: u32 = 65_536;
-    let pages = ((region_bytes as u64 + PAGE as u64 - 1) / PAGE as u64).max(1);
+    let pages = (region_bytes as u64).div_ceil(PAGE as u64).max(1);
     let memory_max_bytes = pages.saturating_mul(PAGE as u64);
 
     let mut pool = PoolingAllocationConfig::default();

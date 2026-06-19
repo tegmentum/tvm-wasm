@@ -183,7 +183,7 @@ fn cross_region_above_4gib_throughput() -> anyhow::Result<()> {
     // Expected: sum over i in [0, WINDOW_U64S) of (0 + i) + (1 + i) + (2 + i).
     let n = WINDOW_U64S as u64;
     let triangular = n * (n - 1) / 2;
-    let single_iter_sum = 3 * triangular + n * (0 + 1 + 2);
+    let single_iter_sum = 3 * triangular + n * (1 + 2);
 
     // Warm up.
     let _ = sum3.call(&mut store, (0, WINDOW_U64S as i32))?;
