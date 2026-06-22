@@ -276,7 +276,7 @@ pub fn link(shell_bytes: &[u8], user_bytes: &[u8]) -> Result<Vec<u8>> {
             push_global(&mut globals, g, |idx| idx, |idx| idx);
         }
         for g in &user.globals {
-            push_global(&mut globals, g, &map_user_global, &map_user_func);
+            push_global(&mut globals, g, map_user_global, map_user_func);
         }
         module.section(&globals);
     }
@@ -316,10 +316,10 @@ pub fn link(shell_bytes: &[u8], user_bytes: &[u8]) -> Result<Vec<u8>> {
             push_export(
                 &mut exports,
                 e,
-                &map_user_func,
-                &map_user_table,
-                &map_user_memory_strict,
-                &map_user_global,
+                map_user_func,
+                map_user_table,
+                map_user_memory_strict,
+                map_user_global,
             );
         }
         module.section(&exports);
@@ -340,7 +340,7 @@ pub fn link(shell_bytes: &[u8], user_bytes: &[u8]) -> Result<Vec<u8>> {
             push_element(&mut elems, el, |idx| idx, |idx| idx)?;
         }
         for el in &user.elements {
-            push_element(&mut elems, el, &map_user_table, &map_user_func)?;
+            push_element(&mut elems, el, map_user_table, map_user_func)?;
         }
         module.section(&elems);
     }
@@ -382,10 +382,10 @@ pub fn link(shell_bytes: &[u8], user_bytes: &[u8]) -> Result<Vec<u8>> {
     {
         let mut datas = wasm_encoder::DataSection::new();
         for d in &shell.data {
-            push_data(&mut datas, d, |m| Ok::<u32, anyhow::Error>(m))?;
+            push_data(&mut datas, d, Ok::<u32, anyhow::Error>)?;
         }
         for d in &user.data {
-            push_data(&mut datas, d, &map_user_memory)?;
+            push_data(&mut datas, d, map_user_memory)?;
         }
         module.section(&datas);
     }
@@ -1494,7 +1494,7 @@ where
             table_index,
             offset,
         } => {
-            let table_idx = table_index.map(|t| map_table(t));
+            let table_idx = table_index.map(map_table);
             let offset = decode_const_expr_to_encoder(offset)?;
             elems.active(table_idx, &offset, elements);
         }
