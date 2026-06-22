@@ -6,6 +6,8 @@ members = [
     "crates/tvm-tests",
     "crates/tvm-guest-rt",
     "crates/tvm-guest-mm",
+    "crates/tvm-guest-mm-rt",
+    "crates/tvm-guest-mm-link",
     "crates/tvm-test-harness",
     "bench-framework/runner",
     "bench-framework/runner-wasmer",

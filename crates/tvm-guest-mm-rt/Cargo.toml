@@ -1,0 +1,19 @@
+[package]
+name = "tvm-guest-mm-rt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Guest-side Rust runtime for the multi-memory TVM (tvm-guest-mm) shell. Provides safe wrappers over the WAT-generated dispatch helpers (tvm_load_u32, tvm_store_u32, tvm_copy_to_default, …) imported from the `tvm_mm` namespace."
+
+[lib]
+# Used as a regular library by guest cdylib consumers. The crate itself
+# is not a cdylib — only the downstream consumer is.
+crate-type = ["rlib"]
+
+[features]
+# Off by default: the runtime is `no_std` so it can be pulled into
+# `#![no_std]` cdylib guests. Turn on `std` for unit tests run on the
+# host triple.
+default = []
+std = []
