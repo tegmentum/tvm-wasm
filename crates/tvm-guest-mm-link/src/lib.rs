@@ -513,6 +513,7 @@ pub fn link(shell_bytes: &[u8], user_bytes: &[u8]) -> Result<Vec<u8>> {
                     &map_shell_global,
                     &map_shell_table,
                     &|t| t, // shell types come first, unchanged
+                    RewriteSide::Shell,
                 )?;
                 codes.function(&func);
             }
@@ -529,6 +530,7 @@ pub fn link(shell_bytes: &[u8], user_bytes: &[u8]) -> Result<Vec<u8>> {
                 &map_user_global,
                 &map_user_table,
                 &map_user_type,
+                RewriteSide::User,
             )?;
             codes.function(&func);
         }
@@ -929,13 +931,26 @@ fn parse_module(bytes: &[u8]) -> Result<ParsedModule<'_>> {
 // direct calls to the corresponding shell functions.
 // ----------------------------------------------------------------
 
+/// Which side of the merged module the caller is rewriting. Drives
+/// memory-instruction handling: the shell legitimately uses multiple
+/// memories (it does intra-pool and pool↔default copies), so it passes
+/// memory indices through unchanged. The user (a cdylib with a single
+/// default memory) is restricted to memory 0, which becomes shell pool
+/// 0 in the merged module.
+#[derive(Clone, Copy)]
+enum RewriteSide {
+    Shell,
+    User,
+}
+
 fn rewrite_function_body<FF, FG, FT, FTy>(
     body: &FunctionBody<'_>,
-    user_types: &[FuncTypeOwned],
+    types: &[FuncTypeOwned],
     map_func: &FF,
     map_global: &FG,
     map_table: &FT,
     map_type: &FTy,
+    side: RewriteSide,
 ) -> Result<wasm_encoder::Function>
 where
     FF: Fn(u32) -> u32,
@@ -945,17 +960,27 @@ where
 {
     let mut func = wasm_encoder::Function::new(read_locals(body)?);
 
+    // The full function-body bytes (locals + code). We use them to
+    // pass raw bytes through for operators we don't decode explicitly.
+    let body_bytes = body.as_bytes();
+    let body_origin = body.range().start;
+
     let mut op_reader = body.get_operators_reader()?;
     while !op_reader.eof() {
+        let before = op_reader.original_position();
         let op = op_reader.read()?;
+        let after = op_reader.original_position();
+        let raw = &body_bytes[before - body_origin..after - body_origin];
         rewrite_op(
             &op,
-            user_types,
+            raw,
+            types,
             &mut func,
             map_func,
             map_global,
             map_table,
             map_type,
+            side,
         )?;
     }
     Ok(func)
@@ -973,12 +998,14 @@ fn read_locals(body: &FunctionBody<'_>) -> Result<Vec<(u32, wasm_encoder::ValTyp
 
 fn rewrite_op<FF, FG, FT, FTy>(
     op: &Operator<'_>,
-    user_types: &[FuncTypeOwned],
+    raw: &[u8],
+    types: &[FuncTypeOwned],
     func: &mut wasm_encoder::Function,
     map_func: &FF,
     map_global: &FG,
     map_table: &FT,
     map_type: &FTy,
+    side: RewriteSide,
 ) -> Result<()>
 where
     FF: Fn(u32) -> u32,
@@ -987,7 +1014,7 @@ where
     FTy: Fn(u32) -> u32,
 {
     use wasm_encoder::Instruction as I;
-    let _ = user_types; // currently unused; reserved for future call_indirect arity checks
+    let _ = types; // currently unused; reserved for future call_indirect arity checks
 
     macro_rules! mem {
         ($m:expr) => {
@@ -1076,11 +1103,12 @@ where
             func.instruction(&I::ElemDrop(elem_index));
         }
         Operator::MemoryInit { mem, data_index } => {
-            // Memory index 0 is the only valid one (user has just the
-            // default memory which we've redirected to shell's pool 0).
-            if mem != 0 {
+            // Memory index 0 is the only valid one for user code (the
+            // user has just one default memory, redirected to shell's
+            // pool 0). Shell code may legitimately target any pool.
+            if matches!(side, RewriteSide::User) && mem != 0 {
                 bail!(
-                    "memory.init references memory {} but only memory 0 is supported",
+                    "memory.init references memory {} but only memory 0 is supported in user code",
                     mem
                 );
             }
@@ -1094,9 +1122,9 @@ where
             func.instruction(&I::DataDrop(data_index));
         }
         Operator::MemoryCopy { dst_mem, src_mem } => {
-            if dst_mem != 0 || src_mem != 0 {
+            if matches!(side, RewriteSide::User) && (dst_mem != 0 || src_mem != 0) {
                 bail!(
-                    "memory.copy uses non-default memory ({} → {}); not supported in user code",
+                    "memory.copy uses non-default memory ({} -> {}); not supported in user code",
                     src_mem,
                     dst_mem
                 );
@@ -1104,20 +1132,29 @@ where
             func.instruction(&I::MemoryCopy { dst_mem, src_mem });
         }
         Operator::MemoryFill { mem } => {
-            if mem != 0 {
-                bail!("memory.fill references memory {}; only 0 is supported", mem);
+            if matches!(side, RewriteSide::User) && mem != 0 {
+                bail!(
+                    "memory.fill references memory {}; only 0 is supported in user code",
+                    mem
+                );
             }
             func.instruction(&I::MemoryFill(mem));
         }
         Operator::MemorySize { mem, .. } => {
-            if mem != 0 {
-                bail!("memory.size references memory {}; only 0 is supported", mem);
+            if matches!(side, RewriteSide::User) && mem != 0 {
+                bail!(
+                    "memory.size references memory {}; only 0 is supported in user code",
+                    mem
+                );
             }
             func.instruction(&I::MemorySize(mem));
         }
         Operator::MemoryGrow { mem, .. } => {
-            if mem != 0 {
-                bail!("memory.grow references memory {}; only 0 is supported", mem);
+            if matches!(side, RewriteSide::User) && mem != 0 {
+                bail!(
+                    "memory.grow references memory {}; only 0 is supported in user code",
+                    mem
+                );
             }
             func.instruction(&I::MemoryGrow(mem));
         }
@@ -1195,26 +1232,36 @@ where
         }
         // Everything else: forward via raw passthrough.
         ref other => {
-            forward_other_op(other, func)?;
+            forward_other_op(other, raw, func)?;
         }
     }
     Ok(())
 }
 
-fn forward_other_op(op: &Operator<'_>, func: &mut wasm_encoder::Function) -> Result<()> {
+fn forward_other_op(
+    op: &Operator<'_>,
+    raw: &[u8],
+    func: &mut wasm_encoder::Function,
+) -> Result<()> {
     // For operators that don't reference function/global/table/type
-    // indices, encode them via the wasm-encoder Instruction enum. For
-    // simplicity we fall back to a direct byte copy using the operator's
-    // textual reader range when available; otherwise we emit a small
-    // subset hand-mapped.
-    //
-    // wasm-encoder's `Instruction` enum is exhaustive, but mapping
-    // every variant from wasmparser is mechanical and ~2000 lines. To
-    // keep the linker compact, we re-serialize the operator via a
-    // minimal mapping that covers the operators rustc emits for a no_std
-    // cdylib (numeric, control flow, parametric). Anything outside that
-    // raises an explicit error rather than silently dropping the op.
-    map_simple_op(op, func)
+    // indices we don't have to decode anything — the operator's raw
+    // bytes encode exactly the same instruction in the merged module.
+    // Try the encoder-friendly path first for instructions whose
+    // wasm-encoder shape we have on hand (cleaner output structure for
+    // common ops); fall back to a raw byte copy for the long tail
+    // (SIMD, GC, threads, …) so the linker handles them without an
+    // exhaustive operator table.
+    if map_simple_op(op, func).is_ok() {
+        return Ok(());
+    }
+    if raw.is_empty() {
+        bail!(
+            "operator {:?} has no encoded byte range and no encoder mapping",
+            op
+        );
+    }
+    func.raw(raw.iter().copied());
+    Ok(())
 }
 
 fn map_simple_op(op: &Operator<'_>, func: &mut wasm_encoder::Function) -> Result<()> {
