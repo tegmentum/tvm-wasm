@@ -51,7 +51,12 @@ Walks both modules with `wasmparser` and re-emits a single core wasm
 via `wasm-encoder`. Drops the user's `(memory ...)` declaration (the
 shell's pool 0 takes its place), strips the user's `tvm_mm` imports,
 and rewires every `call` to those imports as a direct call to the
-corresponding shell-internal helper function.
+corresponding shell-internal helper function. Every other user import
+(function, global, table) is **forwarded** through to the merged
+module's import section so the embedder satisfies it at instantiation
+time exactly as it would have for the pre-link cdylib — WASI
+components, host logging hooks, custom SPI contracts all survive the
+link step unchanged.
 
 See the linker source's module-level rustdoc for the section-by-section
 transformation table, and `tvm-guest-mm/docs/rust-cdylib.md` for the

@@ -72,22 +72,23 @@ The transformations:
 | Section | Behavior |
 |---|---|
 | **Types** | Concatenate (shell first, then user). User type indices renumbered. |
-| **Imports** | Shell must have none. User's `tvm_mm.*` imports are stripped; their func indices map to the corresponding shell-internal function indices via the shell's export table. Non-`tvm_mm` imports are rejected. |
-| **Functions** | Shell function entries unchanged; user's appended. User type indices renumbered. |
-| **Tables** | Concatenate. User table indices renumbered. |
+| **Imports** | Shell must have none. User's `tvm_mm.*` imports are stripped; their func indices map to the corresponding shell-internal function indices via the shell's export table. Every other user import (function, global, table) is **forwarded** into the merged module's import section. Memory imports are rejected — the merged module always declares its own memories (the shell pools). |
+| **Functions** | Shell function entries unchanged; user's appended. User type indices renumbered. The merged module's function-index space starts with the forwarded user imports, then shell-defined funcs, then user-defined funcs. |
+| **Tables** | Concatenate. User table indices renumbered. Forwarded user table imports occupy the low table-index range. |
 | **Memories** | Shell memories only. User's default memory (memory 0) is dropped; the linker rewrites all data segments + memargs referencing it to target pool 0 of the shell (memory 0 in the merged module). Pool 0's initial-page count is auto-bumped to the user's declared initial when it's higher (rustc requests 16 initial pages for the data section + heap base). |
-| **Globals** | Concatenate. User globals renumbered. |
-| **Exports** | Shell exports unchanged. User exports kept except for `memory`, `__data_end`, `__heap_base`, `__indirect_function_table` (rustc cdylib housekeeping that conflicts with the shell's namespace). |
-| **Start** | Shell's start function (if any) is preserved. User start function is rejected. |
-| **Elements** | Concatenate. User elem funcref entries renumbered. |
-| **Code** | Shell code is passed through unmodified (`CodeSection::raw`). User code is re-emitted via `wasm-encoder`; every `call`, `return_call`, `ref.func`, `call_indirect`, `global.*`, `table.*` is renumbered through the maps above. |
+| **Globals** | Concatenate. User globals renumbered. Forwarded user global imports occupy the low global-index range. |
+| **Exports** | Shell exports unchanged in name; their target function/global/table indices are shifted by the count of forwarded user imports of the same kind. User exports kept except for `memory`, `__data_end`, `__heap_base`, `__indirect_function_table` (rustc cdylib housekeeping that conflicts with the shell's namespace). |
+| **Start** | Shell's start function (if any) is preserved; its function index is renumbered. User start function is rejected. |
+| **Elements** | Concatenate. Both sides' elem funcref entries renumbered into the merged func-index space. |
+| **Code** | When forwarded imports shift the shell's func/global/table index space, both shell and user bodies are re-emitted through the rewriter so every `call`, `return_call`, `ref.func`, `call_indirect`, `global.*`, `table.*` is renumbered. Otherwise (strict `tvm_mm`-only consumer) the shell code is passed through as raw bytes. Operators with no index references fall through to a raw byte copy so SIMD / GC / threads operators don't need an exhaustive operator table. |
 | **Data** | Concatenate. User data segments' `memory_index` is rewritten to point at pool 0. |
 
-Operators outside the subset rustc emits for a typical `no_std` cdylib
-return an explicit error from the linker (rather than silently
-dropping the op). The current subset covers everything rustc emits
-for the example consumer and the probe; broaden `map_simple_op` to
-handle SIMD or threads as needed.
+Operators are decoded by `wasmparser`; common ones (control flow,
+numeric, parametric, load/store, calls) are re-emitted through
+`wasm-encoder`'s `Instruction` enum so the merged module is built in
+the encoder's canonical form. Operators that have no index references
+(SIMD lane ops, GC, threads, …) fall through to a raw-bytes
+passthrough — they don't require a hand-written encoder mapping.
 
 ## Quick start
 
@@ -233,16 +234,23 @@ wasmtime constant-folds the BST against.
 ## Constraints + sharp edges
 
 The current implementation handles the common case (rustc-emitted
-no_std cdylibs with only `tvm_mm` imports). The following are
-intentional v1 limits:
+no_std cdylibs with `tvm_mm` data-plane imports plus arbitrary
+host-supplied control-plane imports). The following are intentional
+v1 limits:
 
 1. **Shell must have no imports.** The shell template generates a
    self-contained module, so this is naturally satisfied. The linker
    rejects shells with imports as a sanity check; remove the check
    and forward shell imports as a follow-up.
-2. **User's only imports are from `tvm_mm`.** Other imports (WASI,
-   etc.) are rejected. A future revision can forward arbitrary
-   imports to the merged module's import section.
+2. **Non-`tvm_mm` imports are forwarded.** Function, global, and
+   table imports from any non-`tvm_mm` module survive the link step
+   and reappear in the merged module's import section — the embedder
+   satisfies them at instantiation time exactly as it would have for
+   the pre-link cdylib (e.g. wasmtime `Linker::func_wrap`, browser
+   `WebAssembly.instantiate(... importObject)`). Memory imports are
+   rejected because the merged module always declares its own
+   memories (the shell pools). Tag imports (exception handling) are
+   not yet supported.
 3. **User must not declare a start function.** Conflicts with the
    shell's start. Drop or forward as a follow-up.
 4. **Pool 0 doubles as the user's default memory.** This is by design
@@ -254,13 +262,12 @@ intentional v1 limits:
 5. **No host-mediated memory growth.** Pool 0 still has the rustc
    `memory.grow` instruction; growth is fine if the shell's pool 0
    max allows it.
-6. **Operator coverage.** The rewriter handles the operators rustc
-   emits for typical no_std cdylibs (control flow, numeric, memory
-   load/store, bulk-memory, call/ref). SIMD, threads, GC, exceptions,
-   and tail calls beyond `return_call`/`return_call_indirect` are not
-   covered. The linker bails with an explicit error if it hits an
-   unhandled operator; extend `map_simple_op` in
-   `crates/tvm-guest-mm-link/src/lib.rs` with the missing variant.
+6. **Operator coverage.** Operators with index references (call,
+   ref.func, global.*, table.*, memory.* with a memory immediate) are
+   decoded and renumbered. Operators with no index references (SIMD
+   lane ops, GC, threads, exceptions, …) fall through to a raw-bytes
+   passthrough so the linker handles them without an exhaustive
+   operator table.
 7. **Custom sections are dropped.** Producer/name sections are
    discarded by the linker. For symbol-bearing debug info, the
    consumer should produce a separate `.dwp` and pair it with the
@@ -302,4 +309,45 @@ Run it directly:
 
 ```sh
 cargo test -p tvm-guest-mm --test rust_cdylib_e2e
+```
+
+## Worked example: consumer with forwarded imports
+
+`examples/rust-cdylib-consumer-with-imports/` is a smaller companion
+that demonstrates mixing `tvm_mm` data-plane imports with arbitrary
+control-plane imports. The cdylib declares:
+
+```rust
+#[link(wasm_import_module = "host")]
+extern "C" {
+    fn log(ptr: u32, len: u32);
+    fn now_nanos() -> i64;
+}
+```
+
+alongside its `use tvm_guest_mm_rt::{load_u32, store_u32, Pool};` —
+the linker rewires the `tvm_mm.*` calls to shell-internal functions
+and **forwards** `host.log` / `host.now_nanos` through to the merged
+module's import section. Inspect with `wasm-tools`:
+
+```sh
+cd examples/rust-cdylib-consumer-with-imports
+cargo build --release --target wasm32-unknown-unknown
+cargo run --release -p tvm-guest-mm-link --manifest-path ../../Cargo.toml -- \
+  --pools 2 \
+  --user target/wasm32-unknown-unknown/release/tvm_rust_cdylib_consumer_with_imports.wasm \
+  -o linked.wasm
+wasm-tools print linked.wasm | grep '(import'
+# (import "host" "log" (func (;0;) ...))
+# (import "host" "now_nanos" (func (;1;) ...))
+```
+
+The merged module then instantiates on wasmtime with two
+`linker.func_wrap("host", ...)` calls — the `tvm_mm` substrate is
+fully internal and the host satisfies only the application-level
+imports. See `crates/tvm-guest-mm/tests/rust_cdylib_forwarded_imports_e2e.rs`
+for the full pipeline:
+
+```sh
+cargo test -p tvm-guest-mm --test rust_cdylib_forwarded_imports_e2e
 ```
