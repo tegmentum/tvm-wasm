@@ -19,6 +19,7 @@ exclude = [
     "examples/guest-demo",
     "examples/guest-fast-path",
     "examples/multimem-probe",
+    "examples/rust-cdylib-consumer",
     "bench-framework/workloads/m32",
     "bench-framework/workloads/m64",
     "bench-framework/workloads/tvm",

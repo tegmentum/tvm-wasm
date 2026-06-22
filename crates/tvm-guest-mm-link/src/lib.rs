@@ -242,11 +242,28 @@ pub fn link(shell_bytes: &[u8], user_bytes: &[u8]) -> Result<Vec<u8>> {
         module.section(&tables);
     }
 
-    // Memories: shell only. User's memory is dropped.
+    // Memories: shell only — but bump pool 0's initial pages to at
+    // least match the user's default memory. Rustc cdylibs request 16
+    // initial pages (1 MiB) for the data section + heap base; if the
+    // shell's pool 0 initial is smaller, the user code traps on its
+    // first global access. The shell's max is preserved; pool 0 can
+    // still grow up to its declared max.
+    let user_default_min = user.memories.first().map(|m| m.minimum).unwrap_or(0);
     {
         let mut mems = wasm_encoder::MemorySection::new();
-        for m in &shell.memories {
-            push_memory(&mut mems, m);
+        for (i, m) in shell.memories.iter().enumerate() {
+            let mut effective = m.clone_for_emit();
+            if i == 0 && user_default_min > effective.minimum {
+                effective.minimum = user_default_min;
+                // If the shell's max was set below the user's minimum,
+                // bump max too so the resulting memory type is valid.
+                if let Some(max) = effective.maximum {
+                    if max < user_default_min {
+                        effective.maximum = Some(user_default_min);
+                    }
+                }
+            }
+            push_memory(&mut mems, &effective);
         }
         module.section(&mems);
     }
@@ -444,12 +461,19 @@ struct TableEntry {
     shared: bool,
 }
 
+#[derive(Clone)]
 struct MemoryEntry {
     minimum: u64,
     maximum: Option<u64>,
     memory64: bool,
     shared: bool,
     page_size_log2: Option<u32>,
+}
+
+impl MemoryEntry {
+    fn clone_for_emit(&self) -> Self {
+        self.clone()
+    }
 }
 
 struct GlobalEntry<'a> {
