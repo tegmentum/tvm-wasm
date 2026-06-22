@@ -33,11 +33,18 @@
 //! - **Shell must have no imports.** The shell template generates a
 //!   fully self-contained module, so this is naturally satisfied. The
 //!   linker rejects shells with imports as a sanity check.
-//! - **User's only imports must be from the `tvm_mm` module.** Other
-//!   imports (e.g. WASI) aren't rewired — they pass through
-//!   unrewritten, but the merged module currently doesn't expose any
-//!   way to set them. A future revision can extend the linker to
-//!   forward arbitrary imports.
+//! - **User's `tvm_mm` function imports are rewired internally** —
+//!   every `call tvm_mm.X` becomes a direct internal call to the
+//!   shell's matching exported helper.
+//! - **All other user imports are forwarded** to the merged module's
+//!   import section unchanged. Function, global, and table imports
+//!   from any non-`tvm_mm` module pass through; the host satisfies
+//!   them at instantiation time exactly as it would have for the
+//!   pre-link cdylib (wasmtime `Linker::define_*`, browser
+//!   `WebAssembly.instantiate(... importObject)`, etc.). Memory
+//!   imports are rejected — the merged module always declares its own
+//!   memories (the shell pools) and a cdylib's memory 0 is the shell's
+//!   pool 0.
 //! - **User's memory pages must fit in the shell's pool 0 initial
 //!   capacity.** The merged module uses the shell's pool 0 as the
 //!   default memory; the shell's `initial_pages_per_pool` ×
@@ -56,7 +63,10 @@
 //!
 //! Sections are emitted in canonical wasm order:
 //!   - Types: shell types, then user types (renumbered)
-//!   - Imports: none (shell has none, user's are dropped)
+//!   - Imports: forwarded user imports (non-`tvm_mm`), renumbered into
+//!     the merged module's type/global/table space. The merged module's
+//!     function-index space therefore begins with these forwarded
+//!     function imports.
 //!   - Functions: shell functions, then user functions
 //!   - Tables: shell tables, then user tables
 //!   - Memories: shell memories only (user's dropped)
@@ -116,36 +126,110 @@ pub fn link(shell_bytes: &[u8], user_bytes: &[u8]) -> Result<Vec<u8>> {
         .map(|e| (e.name, e.index))
         .collect();
 
-    // The user's imports occupy the low function-index range. Build a
-    // direct-call rewrite map: old user func index → shell func index.
-    // Non-`tvm_mm` imports are unsupported for now.
+    // Walk the user's import section once. `tvm_mm.*` function imports
+    // are "internal" — they map directly to a shell-defined helper.
+    // Every other import is "forwarded" — it survives into the merged
+    // module's import section unchanged.
+    //
+    // Index spaces in the user module follow the wasm convention:
+    // imports of a given kind come first, then defined entries. We
+    // record the per-kind running counters so we can renumber later.
     let mut user_import_func_count: u32 = 0;
-    let mut import_rewrite: HashMap<u32, u32> = HashMap::new();
+    let mut user_import_global_count: u32 = 0;
+    let mut user_import_table_count: u32 = 0;
+    // For each `tvm_mm` function import, the merged-module shell-defined
+    // function index. Keyed by the user's func-import index (0..K).
+    let mut tvm_mm_rewrite: HashMap<u32, u32> = HashMap::new();
+    // Forwarded imports, in source order. The index of an entry in
+    // this list, combined with how many forwarded entries of each kind
+    // precede it, is the entry's index in the merged module.
+    let mut forwarded: Vec<ForwardedImport<'_>> = Vec::new();
+    // Per-kind forwarded counters: the forwarded import's index in the
+    // merged module is just its position among forwarded entries of
+    // the same kind.
+    let mut fwd_func_count: u32 = 0;
+    let mut fwd_global_count: u32 = 0;
+    let mut fwd_table_count: u32 = 0;
+    // Per-user-import index → merged-module index, by kind.
+    let mut user_func_import_to_merged: HashMap<u32, u32> = HashMap::new();
+    let mut user_global_import_to_merged: HashMap<u32, u32> = HashMap::new();
+    let mut user_table_import_to_merged: HashMap<u32, u32> = HashMap::new();
+
     for imp in &user.imports {
-        if let TypeRef::Func(_) = imp.ty {
-            if imp.module != TVM_MM_IMPORT_MODULE {
-                bail!(
-                    "user module imports `{}.{}` from a module other than `{}`; this linker only handles `tvm_mm` imports",
-                    imp.module,
-                    imp.name,
-                    TVM_MM_IMPORT_MODULE
-                );
+        match imp.ty {
+            TypeRef::Func(ty_idx) | TypeRef::FuncExact(ty_idx) => {
+                let user_idx = user_import_func_count;
+                user_import_func_count += 1;
+                if imp.module == TVM_MM_IMPORT_MODULE {
+                    let shell_idx = *shell_func_exports.get(imp.name).ok_or_else(|| {
+                        anyhow!(
+                            "user imports `{}.{}` but the shell does not export a function with that name",
+                            imp.module,
+                            imp.name
+                        )
+                    })?;
+                    tvm_mm_rewrite.insert(user_idx, shell_idx);
+                } else {
+                    let fwd_idx = fwd_func_count;
+                    fwd_func_count += 1;
+                    user_func_import_to_merged.insert(user_idx, fwd_idx);
+                    forwarded.push(ForwardedImport {
+                        module: imp.module,
+                        name: imp.name,
+                        ty: ForwardedKind::Func { user_type_idx: ty_idx },
+                    });
+                }
             }
-            let shell_idx = *shell_func_exports.get(imp.name).ok_or_else(|| {
-                anyhow!(
-                    "user imports `{}.{}` but the shell does not export a function with that name",
+            TypeRef::Global(g) => {
+                let user_idx = user_import_global_count;
+                user_import_global_count += 1;
+                let fwd_idx = fwd_global_count;
+                fwd_global_count += 1;
+                user_global_import_to_merged.insert(user_idx, fwd_idx);
+                let val_type = val_type_to_encoder(g.content_type)?;
+                forwarded.push(ForwardedImport {
+                    module: imp.module,
+                    name: imp.name,
+                    ty: ForwardedKind::Global(wasm_encoder::GlobalType {
+                        val_type,
+                        mutable: g.mutable,
+                        shared: g.shared,
+                    }),
+                });
+            }
+            TypeRef::Table(t) => {
+                let user_idx = user_import_table_count;
+                user_import_table_count += 1;
+                let fwd_idx = fwd_table_count;
+                fwd_table_count += 1;
+                user_table_import_to_merged.insert(user_idx, fwd_idx);
+                let element_type = ref_type_to_encoder(t.element_type)?;
+                forwarded.push(ForwardedImport {
+                    module: imp.module,
+                    name: imp.name,
+                    ty: ForwardedKind::Table(wasm_encoder::TableType {
+                        element_type,
+                        minimum: t.initial,
+                        maximum: t.maximum,
+                        table64: t.table64,
+                        shared: t.shared,
+                    }),
+                });
+            }
+            TypeRef::Memory(_) => {
+                bail!(
+                    "user module imports memory `{}.{}`; the merged module always declares its own memories (shell pool 0 is the user's default memory). Drop the import or declare the memory locally.",
                     imp.module,
                     imp.name
-                )
-            })?;
-            import_rewrite.insert(user_import_func_count, shell_idx);
-            user_import_func_count += 1;
-        } else {
-            bail!(
-                "user module imports non-function `{}.{}`; only function imports are supported",
-                imp.module,
-                imp.name
-            );
+                );
+            }
+            TypeRef::Tag(_) => {
+                bail!(
+                    "user module imports tag `{}.{}`; exception handling is not yet supported by the linker",
+                    imp.module,
+                    imp.name
+                );
+            }
         }
     }
 
@@ -156,35 +240,65 @@ pub fn link(shell_bytes: &[u8], user_bytes: &[u8]) -> Result<Vec<u8>> {
     // ----------------------------------------------------------------
     // Compute index maps for the merged module.
     // ----------------------------------------------------------------
+    //
+    // Merged-module index layout per kind:
+    //   funcs:   [forwarded user imports][shell defined][user defined]
+    //   globals: [forwarded user imports][shell defined][user defined]
+    //   tables:  [forwarded user imports][shell defined][user defined]
+    //
+    // (The shell has zero imports today; if that ever changes, shell
+    // imports would go before the user's forwarded imports in each
+    // kind. This is a single-line extension when needed.)
 
     // Type index map: shell types first, then user types.
     let shell_type_count = shell.types.len() as u32;
     let map_user_type = |t: u32| -> u32 { t + shell_type_count };
 
-    // Function index map (post-merge, includes all funcs in linear order):
-    //   - shell.funcs[i] → i               (shell has 0 imports)
-    //   - user import K  → import_rewrite[K]
-    //   - user defined j → shell_func_count + j
+    // Function index map.
     let shell_func_count = shell.func_types.len() as u32; // shell has 0 imports; "func_types" already excludes imports
+    let map_shell_func = move |idx: u32| -> u32 { idx + fwd_func_count };
     let map_user_func = |idx: u32| -> u32 {
         if idx < user_import_func_count {
-            *import_rewrite
-                .get(&idx)
-                .expect("rewrite map populated for every import idx")
+            // Either a tvm_mm rewire (to a shell defined func) or a
+            // forwarded user import (kept in the merged import section).
+            if let Some(&shell_idx) = tvm_mm_rewrite.get(&idx) {
+                map_shell_func(shell_idx)
+            } else {
+                *user_func_import_to_merged
+                    .get(&idx)
+                    .expect("every user func import is either tvm_mm or forwarded")
+            }
         } else {
-            shell_func_count + (idx - user_import_func_count)
+            // User defined function: comes after forwarded imports + shell defined.
+            fwd_func_count + shell_func_count + (idx - user_import_func_count)
         }
     };
 
-    // Global index map: shell globals first, then user globals (after
-    // user imports — but user has no global imports per the constraint
-    // above).
+    // Global index map.
     let shell_global_count = shell.globals_emitted as u32;
-    let map_user_global = |g: u32| -> u32 { g + shell_global_count };
+    let map_shell_global = move |idx: u32| -> u32 { idx + fwd_global_count };
+    let map_user_global = |g: u32| -> u32 {
+        if g < user_import_global_count {
+            *user_global_import_to_merged
+                .get(&g)
+                .expect("every user global import is forwarded")
+        } else {
+            fwd_global_count + shell_global_count + (g - user_import_global_count)
+        }
+    };
 
     // Table index map.
     let shell_table_count = shell.tables.len() as u32;
-    let map_user_table = |t: u32| -> u32 { t + shell_table_count };
+    let map_shell_table = move |idx: u32| -> u32 { idx + fwd_table_count };
+    let map_user_table = |t: u32| -> u32 {
+        if t < user_import_table_count {
+            *user_table_import_to_merged
+                .get(&t)
+                .expect("every user table import is forwarded")
+        } else {
+            fwd_table_count + shell_table_count + (t - user_import_table_count)
+        }
+    };
 
     // Memory index map: user memory 0 → shell memory 0 (pool 0).
     // The shell's pool 0 is always at memory index 0; the user's only
@@ -216,7 +330,29 @@ pub fn link(shell_bytes: &[u8], user_bytes: &[u8]) -> Result<Vec<u8>> {
         module.section(&types);
     }
 
-    // Imports: none (shell has none, user's are all rewired).
+    // Imports: forwarded user imports. The shell currently has none;
+    // when it does, shell imports would precede these.
+    if !forwarded.is_empty() {
+        let mut imports = wasm_encoder::ImportSection::new();
+        for fwd in &forwarded {
+            match &fwd.ty {
+                ForwardedKind::Func { user_type_idx } => {
+                    imports.import(
+                        fwd.module,
+                        fwd.name,
+                        wasm_encoder::EntityType::Function(map_user_type(*user_type_idx)),
+                    );
+                }
+                ForwardedKind::Global(g) => {
+                    imports.import(fwd.module, fwd.name, wasm_encoder::EntityType::Global(*g));
+                }
+                ForwardedKind::Table(t) => {
+                    imports.import(fwd.module, fwd.name, wasm_encoder::EntityType::Table(*t));
+                }
+            }
+        }
+        module.section(&imports);
+    }
 
     // Functions: shell + user (user funcs' type indices remapped).
     {
@@ -268,12 +404,13 @@ pub fn link(shell_bytes: &[u8], user_bytes: &[u8]) -> Result<Vec<u8>> {
         module.section(&mems);
     }
 
-    // Globals: shell + user. User globals' initializers may reference
-    // globals or funcs; rewrite them.
+    // Globals: shell + user. Shell globals get shifted by forwarded
+    // counts (their initializers may reference other globals or funcs).
+    // User globals likewise.
     {
         let mut globals = wasm_encoder::GlobalSection::new();
         for g in &shell.globals {
-            push_global(&mut globals, g, |idx| idx, |idx| idx);
+            push_global(&mut globals, g, map_shell_global, map_shell_func);
         }
         for g in &user.globals {
             push_global(&mut globals, g, map_user_global, map_user_func);
@@ -290,10 +427,10 @@ pub fn link(shell_bytes: &[u8], user_bytes: &[u8]) -> Result<Vec<u8>> {
             push_export(
                 &mut exports,
                 e,
+                map_shell_func,
+                map_shell_table,
                 |idx| idx,
-                |idx| idx,
-                |idx| idx,
-                |idx| idx,
+                map_shell_global,
             );
         }
         for e in &user.exports {
@@ -328,16 +465,16 @@ pub fn link(shell_bytes: &[u8], user_bytes: &[u8]) -> Result<Vec<u8>> {
     // Start: shell's start, if any. User start was rejected upstream.
     if let Some(start) = shell.start {
         module.section(&wasm_encoder::StartSection {
-            function_index: start,
+            function_index: map_shell_func(start),
         });
     }
 
-    // Element segments: shell + user (user elem funcref entries
-    // remapped).
+    // Element segments: shell + user. Both sides' func entries get
+    // shifted into the merged func-index space.
     {
         let mut elems = wasm_encoder::ElementSection::new();
         for el in &shell.elements {
-            push_element(&mut elems, el, |idx| idx, |idx| idx)?;
+            push_element(&mut elems, el, map_shell_table, map_shell_func)?;
         }
         for el in &user.elements {
             push_element(&mut elems, el, map_user_table, map_user_func)?;
@@ -357,12 +494,32 @@ pub fn link(shell_bytes: &[u8], user_bytes: &[u8]) -> Result<Vec<u8>> {
         });
     }
 
-    // Code section: shell code unchanged (raw pass-through), user
-    // code rewritten via wasm-encoder.
+    // Code section:
+    //   - If no forwarded imports shift the shell's func-index space,
+    //     pass the shell code through unchanged (raw bytes — fastest).
+    //   - Otherwise, rewrite every shell body through the rewriter so
+    //     `call`/`ref.func`/`global.*`/`table.*` ops are renumbered.
+    //   - User code is always rewritten.
+    let shell_needs_renumber =
+        fwd_func_count != 0 || fwd_global_count != 0 || fwd_table_count != 0;
     {
         let mut codes = wasm_encoder::CodeSection::new();
-        for body_bytes in &shell.code {
-            codes.raw(body_bytes);
+        if shell_needs_renumber {
+            for body in &shell.code_readers {
+                let func = rewrite_function_body(
+                    body,
+                    &shell.types,
+                    &map_shell_func,
+                    &map_shell_global,
+                    &map_shell_table,
+                    &|t| t, // shell types come first, unchanged
+                )?;
+                codes.function(&func);
+            }
+        } else {
+            for body_bytes in &shell.code {
+                codes.raw(body_bytes);
+            }
         }
         for body in &user.code_readers {
             let func = rewrite_function_body(
@@ -450,6 +607,25 @@ struct ImportEntry<'a> {
     module: &'a str,
     name: &'a str,
     ty: TypeRef,
+}
+
+/// One non-`tvm_mm` user import that survives into the merged module's
+/// import section. The `ty` carries the import's kind plus enough
+/// detail to re-emit it (a renumbered type index for funcs, the
+/// already-translated encoder type for globals/tables).
+struct ForwardedImport<'a> {
+    module: &'a str,
+    name: &'a str,
+    ty: ForwardedKind,
+}
+
+enum ForwardedKind {
+    /// Function import. The carried `user_type_idx` is the index in the
+    /// user module's type space; it must be remapped through
+    /// `map_user_type` at emit time.
+    Func { user_type_idx: u32 },
+    Global(wasm_encoder::GlobalType),
+    Table(wasm_encoder::TableType),
 }
 
 struct TableEntry {
