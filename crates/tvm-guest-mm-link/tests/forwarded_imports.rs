@@ -187,7 +187,7 @@ fn forwarded_import_position_zero_in_func_index_space() -> Result<()> {
                             n
                         }
                         wasmparser::Imports::Compact2 { ty, names, .. } => {
-                            let names_count = names.count() as u32;
+                            let names_count: u32 = names.count();
                             if matches!(ty, wasmparser::TypeRef::Func(_)) {
                                 names_count
                             } else {

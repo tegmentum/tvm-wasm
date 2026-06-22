@@ -996,6 +996,7 @@ fn read_locals(body: &FunctionBody<'_>) -> Result<Vec<(u32, wasm_encoder::ValTyp
     Ok(locals)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn rewrite_op<FF, FG, FT, FTy>(
     op: &Operator<'_>,
     raw: &[u8],
