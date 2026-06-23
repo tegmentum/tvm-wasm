@@ -229,10 +229,17 @@ fn name_section_lands_after_code() -> Result<()> {
     // The `name` section is positional: validators expect it after the
     // Code section. If it lands before Code, some tooling rejects the
     // module. Confirm we preserve that ordering.
+    //
+    // The payload must be a well-formed name-section binary — the
+    // linker decodes it to remap embedded function indices into the
+    // merged module's index space, so degenerate bytes won't parse.
+    let mut names = wasm_encoder::NameSection::new();
+    names.module("hello");
+    let payload = names.as_custom().data.into_owned();
     let user = build_user_with_customs(&[(
         SectionPosition::AfterCode,
         "name",
-        b"\x00\x05hello", // name-section payload — exact bytes don't matter
+        &payload,
     )]);
     let shell = build_shell_with_customs(&[]);
     let merged = link(&shell, &user)?;
@@ -300,6 +307,206 @@ fn multiple_customs_all_pass_through() -> Result<()> {
         "missing producers; got {:?}",
         names
     );
+    Ok(())
+}
+
+/// Walk the merged module's name section(s) and collect
+/// `(index, name)` pairs from every Function subsection encountered.
+/// Multiple `name` sections can exist (we emit shell-side then
+/// user-side); both contribute.
+fn function_names_of(bytes: &[u8]) -> Result<Vec<(u32, String)>> {
+    let mut out: Vec<(u32, String)> = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(bytes) {
+        if let wasmparser::Payload::CustomSection(cs) = payload? {
+            if cs.name() != "name" {
+                continue;
+            }
+            let reader = wasmparser::NameSectionReader::new(
+                wasmparser::BinaryReader::new(cs.data(), 0),
+            );
+            for sub in reader {
+                if let wasmparser::Name::Function(map) = sub? {
+                    for n in map {
+                        let n = n?;
+                        out.push((n.index, n.name.to_string()));
+                    }
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+#[test]
+fn user_name_section_function_indices_get_remapped() -> Result<()> {
+    // User pre-link: function index 0 = `tvm_mm.tvm_load_u8` import,
+    // function index 1 = the user-defined `go`. The user names them
+    // `imported_loader` and `go_user`.
+    //
+    // After link, the shell has its own defined `tvm_load_u8` at
+    // merged-module func index 0 (no forwarded imports → no shift),
+    // and the user's `go` shifts to merged index 1 (fwd_func_count=0
+    // + shell_func_count=1 + (1-1)=1). The `tvm_mm.tvm_load_u8`
+    // import is rewired into the shell's function so it doesn't take
+    // a slot in the merged index space at all.
+    //
+    // Therefore the user-side name `go_user` must be remapped to
+    // index 1 in the merged module's name section. Before this fix,
+    // the linker passed the bytes through verbatim so `go_user` ended
+    // up labeling index 1's predecessor (or, worse, an index that
+    // doesn't exist).
+    let mut names = wasm_encoder::NameSection::new();
+    let mut funcs = wasm_encoder::NameMap::new();
+    funcs.append(0, "imported_loader");
+    funcs.append(1, "go_user");
+    names.functions(&funcs);
+    let payload = names.as_custom().data.into_owned();
+
+    let user = build_user_with_customs(&[(
+        SectionPosition::AfterCode,
+        "name",
+        &payload,
+    )]);
+    let shell = build_shell_with_customs(&[]);
+    let merged = link(&shell, &user)?;
+
+    wasmparser::Validator::new_with_features(
+        wasmparser::WasmFeatures::default() | wasmparser::WasmFeatures::MULTI_MEMORY,
+    )
+    .validate_all(&merged)?;
+
+    let names = function_names_of(&merged)?;
+    // Find the `go_user` entry — it should live at index 1, not at
+    // index 1 in the user's pre-link space (which would alias the
+    // shell's `tvm_load_u8`).
+    let go_user_idx = names
+        .iter()
+        .find(|(_, n)| n == "go_user")
+        .map(|(i, _)| *i);
+    assert_eq!(
+        go_user_idx,
+        Some(1),
+        "`go_user` should map to merged func index 1; got names {:?}",
+        names
+    );
+    // The export table places `go` at merged func index 1; cross-check
+    // that the name section agrees with the export table.
+    let mut exported_go_idx: Option<u32> = None;
+    for payload in wasmparser::Parser::new(0).parse_all(&merged) {
+        if let wasmparser::Payload::ExportSection(reader) = payload? {
+            for exp in reader {
+                let exp = exp?;
+                if exp.name == "go" {
+                    exported_go_idx = Some(exp.index);
+                }
+            }
+        }
+    }
+    assert_eq!(
+        exported_go_idx,
+        Some(1),
+        "`go` should export at merged func index 1"
+    );
+    Ok(())
+}
+
+#[test]
+fn user_name_section_with_forwarded_imports_remaps_correctly() -> Result<()> {
+    // Build a user with both a tvm_mm import and a forwarded import.
+    // The forwarded import claims merged func index 0, shifting
+    // shell-defined functions to index 1+, and shifting all user-
+    // defined functions by an additional 1.
+    let mut module = Module::new();
+    // Type 0: (i32, i32) -> i32 (matches tvm_load_u8).
+    let mut types = TypeSection::new();
+    types.ty().function(
+        [wasm_encoder::ValType::I32, wasm_encoder::ValType::I32],
+        [wasm_encoder::ValType::I32],
+    );
+    // Type 1: () -> () for the forwarded import and the user fn.
+    types.ty().function([], []);
+    module.section(&types);
+
+    // Imports:
+    //   0: tvm_mm.tvm_load_u8   (rewired)
+    //   1: env.host_print       (forwarded)
+    let mut imports = wasm_encoder::ImportSection::new();
+    imports.import(
+        "tvm_mm",
+        "tvm_load_u8",
+        wasm_encoder::EntityType::Function(0),
+    );
+    imports.import(
+        "env",
+        "host_print",
+        wasm_encoder::EntityType::Function(1),
+    );
+    module.section(&imports);
+
+    // One user-defined fn of type 1.
+    let mut funcs = FunctionSection::new();
+    funcs.function(1);
+    module.section(&funcs);
+
+    // Export the user fn (pre-link index 2) under name `start`.
+    let mut exports = ExportSection::new();
+    exports.export("start", ExportKind::Func, 2);
+    module.section(&exports);
+
+    // Code body for the user fn: just calls the forwarded import.
+    let mut codes = CodeSection::new();
+    let mut body = Function::new(Vec::new());
+    body.instruction(&Instruction::Call(1));
+    body.instruction(&Instruction::End);
+    codes.function(&body);
+    module.section(&codes);
+
+    // Name section: 0→"loader_import", 1→"host_print_import",
+    // 2→"start_user".
+    let mut names = wasm_encoder::NameSection::new();
+    let mut func_names = wasm_encoder::NameMap::new();
+    func_names.append(0, "loader_import");
+    func_names.append(1, "host_print_import");
+    func_names.append(2, "start_user");
+    names.functions(&func_names);
+    module.section(&names);
+    let user_bytes = module.finish();
+
+    let shell = build_shell_with_customs(&[]);
+    let merged = link(&shell, &user_bytes)?;
+
+    wasmparser::Validator::new_with_features(
+        wasmparser::WasmFeatures::default() | wasmparser::WasmFeatures::MULTI_MEMORY,
+    )
+    .validate_all(&merged)?;
+
+    // Expected merged-module func indices:
+    //   0: forwarded `env.host_print`
+    //   1: shell's tvm_load_u8 (defined)
+    //   2: user `start` (user defined, shifted by fwd+shell)
+    let names = function_names_of(&merged)?;
+    let start_idx = names.iter().find(|(_, n)| n == "start_user").map(|(i, _)| *i);
+    let host_print_idx = names.iter().find(|(_, n)| n == "host_print_import").map(|(i, _)| *i);
+    let loader_idx = names.iter().find(|(_, n)| n == "loader_import").map(|(i, _)| *i);
+    assert_eq!(start_idx, Some(2), "`start_user` should be at merged idx 2; names={:?}", names);
+    assert_eq!(host_print_idx, Some(0), "`host_print_import` should be at merged idx 0; names={:?}", names);
+    // The rewired tvm_mm import now lives at the shell function's
+    // merged index, which is 1 (post fwd shift).
+    assert_eq!(loader_idx, Some(1), "`loader_import` (rewired to shell's tvm_load_u8) should be at merged idx 1; names={:?}", names);
+
+    // Cross-check against the export table.
+    let mut exported_start_idx: Option<u32> = None;
+    for payload in wasmparser::Parser::new(0).parse_all(&merged) {
+        if let wasmparser::Payload::ExportSection(reader) = payload? {
+            for exp in reader {
+                let exp = exp?;
+                if exp.name == "start" {
+                    exported_start_idx = Some(exp.index);
+                }
+            }
+        }
+    }
+    assert_eq!(exported_start_idx, Some(2));
     Ok(())
 }
 

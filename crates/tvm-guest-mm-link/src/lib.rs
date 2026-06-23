@@ -347,28 +347,65 @@ pub fn link_with_options(
 
     // Emits all custom sections from `shell` then `user` whose
     // captured marker matches `marker` (or whose marker is `None`
-    // when `marker` is `None`). Customs are written verbatim — name
-    // + raw bytes — so positional sections like `name` (which is
-    // valid after Code) and component-type sections (typically at the
-    // end of the module) land where they belong.
+    // when `marker` is `None`). Most customs are written verbatim —
+    // name + raw bytes — so positional sections like component-type
+    // sections (typically at the end of the module) land where they
+    // belong.
+    //
+    // The user's `name` custom section is a special case: its
+    // function/global/table/etc. subsections name entries by index in
+    // the user's pre-link index space. The merged module shifts those
+    // indices (by `fwd_func_count + shell_func_count` for functions,
+    // etc.), so the name section needs the same shift or every name
+    // points at the wrong entry — wreaking havoc on every tool that
+    // reads symbols, including wasmtime tracebacks. The shell's name
+    // section (if any — there isn't one today, since the shell is
+    // WAT-compiled) is also remapped via the shell-side maps.
     let emit_customs = |module: &mut wasm_encoder::Module,
-                        marker: Option<SectionMarker>| {
-        for cs in shell
-            .custom_sections
-            .iter()
-            .chain(user.custom_sections.iter())
-        {
-            if cs.after == marker {
+                        marker: Option<SectionMarker>|
+     -> Result<()> {
+        // Shell side first, then user side. We track which side we're
+        // on so we can pick the right index remappers for the `name`
+        // section's contents.
+        let shell_iter = shell.custom_sections.iter().map(|cs| (CustomSide::Shell, cs));
+        let user_iter = user.custom_sections.iter().map(|cs| (CustomSide::User, cs));
+        for (side, cs) in shell_iter.chain(user_iter) {
+            if cs.after != marker {
+                continue;
+            }
+            if cs.name == "name" {
+                let remapped = match side {
+                    CustomSide::Shell => remap_name_section_data(
+                        cs.data,
+                        &map_shell_func,
+                        &map_shell_global,
+                        &map_shell_table,
+                        &|t| t,
+                    )?,
+                    CustomSide::User => remap_name_section_data(
+                        cs.data,
+                        &map_user_func,
+                        &map_user_global,
+                        &map_user_table,
+                        &map_user_type,
+                    )?,
+                };
+                module.section(&wasm_encoder::CustomSection {
+                    name: std::borrow::Cow::Borrowed("name"),
+                    data: std::borrow::Cow::Owned(remapped),
+                });
+            } else {
                 module.section(&wasm_encoder::CustomSection {
                     name: std::borrow::Cow::Borrowed(cs.name),
                     data: std::borrow::Cow::Borrowed(cs.data),
                 });
             }
         }
+        Ok(())
     };
 
     // Customs that appeared before any real section in either input.
-    emit_customs(&mut module, None);
+    emit_customs(&mut module, None)?;
 
     // Types: shell + user (user types renumbered).
     {
@@ -381,7 +418,7 @@ pub fn link_with_options(
         }
         module.section(&types);
     }
-    emit_customs(&mut module, Some(SectionMarker::Type));
+    emit_customs(&mut module, Some(SectionMarker::Type))?;
 
     // Imports: forwarded user imports. The shell currently has none;
     // when it does, shell imports would precede these.
@@ -406,7 +443,7 @@ pub fn link_with_options(
         }
         module.section(&imports);
     }
-    emit_customs(&mut module, Some(SectionMarker::Import));
+    emit_customs(&mut module, Some(SectionMarker::Import))?;
 
     // Functions: shell + user (user funcs' type indices remapped).
     {
@@ -419,7 +456,7 @@ pub fn link_with_options(
         }
         module.section(&funcs);
     }
-    emit_customs(&mut module, Some(SectionMarker::Function));
+    emit_customs(&mut module, Some(SectionMarker::Function))?;
 
     // Tables: shell + user.
     {
@@ -432,7 +469,7 @@ pub fn link_with_options(
         }
         module.section(&tables);
     }
-    emit_customs(&mut module, Some(SectionMarker::Table));
+    emit_customs(&mut module, Some(SectionMarker::Table))?;
 
     // Memories: shell only — but bump pool 0's initial pages to at
     // least match the user's default memory. Rustc cdylibs request 16
@@ -459,7 +496,7 @@ pub fn link_with_options(
         }
         module.section(&mems);
     }
-    emit_customs(&mut module, Some(SectionMarker::Memory));
+    emit_customs(&mut module, Some(SectionMarker::Memory))?;
 
     // Globals: shell + user. Shell globals get shifted by forwarded
     // counts (their initializers may reference other globals or funcs).
@@ -474,7 +511,7 @@ pub fn link_with_options(
         }
         module.section(&globals);
     }
-    emit_customs(&mut module, Some(SectionMarker::Global));
+    emit_customs(&mut module, Some(SectionMarker::Global))?;
 
     // Exports: shell + filtered user exports. Drop user's `memory`
     // export (the shell already exports `mem0..memN` — pool 0 is the
@@ -561,7 +598,7 @@ pub fn link_with_options(
         }
         module.section(&exports);
     }
-    emit_customs(&mut module, Some(SectionMarker::Export));
+    emit_customs(&mut module, Some(SectionMarker::Export))?;
 
     // Start: shell's start, if any. User start was rejected upstream.
     if let Some(start) = shell.start {
@@ -569,7 +606,7 @@ pub fn link_with_options(
             function_index: map_shell_func(start),
         });
     }
-    emit_customs(&mut module, Some(SectionMarker::Start));
+    emit_customs(&mut module, Some(SectionMarker::Start))?;
 
     // Element segments: shell + user. Both sides' func entries get
     // shifted into the merged func-index space.
@@ -583,7 +620,7 @@ pub fn link_with_options(
         }
         module.section(&elems);
     }
-    emit_customs(&mut module, Some(SectionMarker::Element));
+    emit_customs(&mut module, Some(SectionMarker::Element))?;
 
     // DataCount section: required when bulk-memory data.drop or
     // memory.init instructions exist. Both the shell (memory.fill,
@@ -596,7 +633,7 @@ pub fn link_with_options(
             count: total_data_segments,
         });
     }
-    emit_customs(&mut module, Some(SectionMarker::DataCount));
+    emit_customs(&mut module, Some(SectionMarker::DataCount))?;
 
     // Code section:
     //   - If no forwarded imports shift the shell's func-index space,
@@ -640,7 +677,7 @@ pub fn link_with_options(
         }
         module.section(&codes);
     }
-    emit_customs(&mut module, Some(SectionMarker::Code));
+    emit_customs(&mut module, Some(SectionMarker::Code))?;
 
     // Data: shell + user (memory index remapped to shell's 0).
     {
@@ -653,7 +690,7 @@ pub fn link_with_options(
         }
         module.section(&datas);
     }
-    emit_customs(&mut module, Some(SectionMarker::Data));
+    emit_customs(&mut module, Some(SectionMarker::Data))?;
 
     Ok(module.finish())
 }
@@ -665,6 +702,184 @@ fn map_user_memory_strict(m: u32) -> u32 {
         panic!("user export references non-default memory");
     }
     0
+}
+
+/// Which input a custom section came from. Drives the choice of index
+/// remappers when the section is a `name` section whose contents need
+/// translation into the merged module's index space.
+#[derive(Clone, Copy)]
+enum CustomSide {
+    Shell,
+    User,
+}
+
+/// Decode a `name` custom section's payload, remap every function /
+/// global / table / type / memory index that appears inside the
+/// per-subsection name maps, and re-encode. The shape of the section
+/// is preserved: subsection order, the set of subsections, and the
+/// (index, name) tuples within each map.
+///
+/// The Module name subsection (subsection id 0) and Unknown
+/// subsections are passed through verbatim — they hold no indices we
+/// need to rewrite.
+///
+/// Memory and data-segment indices are passed through unchanged: the
+/// merged module reuses the user's data segments at the same indices,
+/// and the user's only declared memory (memory 0) maps to the merged
+/// module's memory 0 (shell pool 0). Element-segment indices are
+/// likewise unchanged because element segments are merged shell-first
+/// then user, and the user's name section only references user-side
+/// element segments — but we don't currently shift those, so they
+/// would point at the wrong segment in the merged module. In practice
+/// rustc cdylibs don't emit element-segment names, so we leave that
+/// for a follow-up.
+fn remap_name_section_data<FF, FG, FT, FTy>(
+    data: &[u8],
+    map_func: &FF,
+    map_global: &FG,
+    map_table: &FT,
+    map_type: &FTy,
+) -> Result<Vec<u8>>
+where
+    FF: Fn(u32) -> u32,
+    FG: Fn(u32) -> u32,
+    FT: Fn(u32) -> u32,
+    FTy: Fn(u32) -> u32,
+{
+    use wasmparser::Name;
+    let reader =
+        wasmparser::NameSectionReader::new(wasmparser::BinaryReader::new(data, 0));
+    let mut out = wasm_encoder::NameSection::new();
+    for sub in reader {
+        let sub = sub.context("decoding name-section subsection")?;
+        match sub {
+            Name::Module { name, .. } => {
+                out.module(name);
+            }
+            Name::Function(map) => {
+                let remapped = remap_name_map(map, map_func)?;
+                out.functions(&remapped);
+            }
+            Name::Local(map) => {
+                // Local names: indirect map keyed by function index;
+                // inner map is local index within that function.
+                // Remap only the outer function index; locals are
+                // intra-function and unaffected by the merge.
+                let remapped = remap_indirect_name_map(map, map_func, &|i| i)?;
+                out.locals(&remapped);
+            }
+            Name::Label(map) => {
+                // Labels: keyed by function index; inner is label
+                // index within the function (unchanged).
+                let remapped = remap_indirect_name_map(map, map_func, &|i| i)?;
+                out.labels(&remapped);
+            }
+            Name::Type(map) => {
+                let remapped = remap_name_map(map, map_type)?;
+                out.types(&remapped);
+            }
+            Name::Table(map) => {
+                let remapped = remap_name_map(map, map_table)?;
+                out.tables(&remapped);
+            }
+            Name::Memory(map) => {
+                // The merged module reuses memory 0 for the user's
+                // default; pass indices through.
+                let remapped = remap_name_map(map, &|i| i)?;
+                out.memories(&remapped);
+            }
+            Name::Global(map) => {
+                let remapped = remap_name_map(map, map_global)?;
+                out.globals(&remapped);
+            }
+            Name::Element(map) => {
+                // Element-segment indices aren't shifted today; pass
+                // through. See the note in this function's doc
+                // comment.
+                let remapped = remap_name_map(map, &|i| i)?;
+                out.elements(&remapped);
+            }
+            Name::Data(map) => {
+                // Data-segment indices: pass through (shell + user
+                // data segments concatenate; user-side names reference
+                // user-side segments only if we shifted them, but
+                // current rustc output doesn't name data segments).
+                let remapped = remap_name_map(map, &|i| i)?;
+                out.data(&remapped);
+            }
+            Name::Field(map) => {
+                // GC types: pass through (we reject non-func composite
+                // types upstream, so this path shouldn't fire).
+                let remapped = remap_indirect_name_map(map, map_type, &|i| i)?;
+                out.fields(&remapped);
+            }
+            Name::Tag(map) => {
+                // Exception tags: we reject tag imports upstream, but
+                // a user-defined tag could in principle appear. The
+                // tag index space is currently empty so pass-through
+                // is fine.
+                let remapped = remap_name_map(map, &|i| i)?;
+                out.tag(&remapped);
+            }
+            Name::Unknown { ty, data, .. } => {
+                out.raw(ty, data);
+            }
+        }
+    }
+    Ok(out.as_custom().data.into_owned())
+}
+
+fn remap_name_map<F>(
+    map: wasmparser::NameMap<'_>,
+    remap: &F,
+) -> Result<wasm_encoder::NameMap>
+where
+    F: Fn(u32) -> u32,
+{
+    // The encoder's `NameMap::append` requires strictly ascending
+    // indices. After remapping, the user's original ascending order
+    // may not survive (the remap can interleave shell+user index
+    // ranges), so collect, sort, and dedup-by-index before encoding.
+    let mut entries: Vec<(u32, &str)> = Vec::new();
+    for n in map {
+        let n = n.context("decoding name-map entry")?;
+        entries.push((remap(n.index), n.name));
+    }
+    entries.sort_by_key(|(idx, _)| *idx);
+    // Drop duplicate indices defensively — a well-formed input
+    // shouldn't have any, but post-remap collisions would corrupt the
+    // section.
+    entries.dedup_by_key(|(idx, _)| *idx);
+    let mut out = wasm_encoder::NameMap::new();
+    for (idx, name) in entries {
+        out.append(idx, name);
+    }
+    Ok(out)
+}
+
+fn remap_indirect_name_map<FOuter, FInner>(
+    map: wasmparser::IndirectNameMap<'_>,
+    remap_outer: &FOuter,
+    remap_inner: &FInner,
+) -> Result<wasm_encoder::IndirectNameMap>
+where
+    FOuter: Fn(u32) -> u32,
+    FInner: Fn(u32) -> u32,
+{
+    let mut entries: Vec<(u32, wasm_encoder::NameMap)> = Vec::new();
+    for ind in map {
+        let ind = ind.context("decoding indirect name-map entry")?;
+        let inner = remap_name_map(ind.names, remap_inner)?;
+        entries.push((remap_outer(ind.index), inner));
+    }
+    entries.sort_by_key(|(idx, _)| *idx);
+    // Same ascending-index requirement as remap_name_map.
+    entries.dedup_by(|a, b| a.0 == b.0);
+    let mut out = wasm_encoder::IndirectNameMap::new();
+    for (idx, names) in entries {
+        out.append(idx, &names);
+    }
+    Ok(out)
 }
 
 // ----------------------------------------------------------------
