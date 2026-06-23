@@ -293,6 +293,36 @@ v1 limits:
    indices will not match the pre-link cdylib's, so a `name` section
    from the cdylib points at the renumbered functions — pair separate
    `.dwp` debug info with the linked module, not the cdylib.
+8. **Indirect calls work.** `call_indirect` through user-declared
+   tables is fully supported: element-segment entries are renumbered
+   in both the compact (direct func indices) and expression-form
+   (`(ref.func N)` const-exprs that LLVM + wit-bindgen emit) shapes,
+   and element segments using the default-table form are
+   re-materialized to point at the renumbered user table rather than
+   at the shell's table 0. `examples/rust-cdylib-consumer-indirect/`
+   exercises this end-to-end.
+
+## Known follow-ups
+
+Still deferred — the linker handles the common rustc-cdylib + wit-bindgen
+path today, but these are intentional v1 limits:
+
+- **User-declared start function.** The user side rejects a start
+  function because the merged module's start belongs to the shell.
+  A multi-start-merge would call both in deterministic order; not
+  done yet.
+- **Tag imports / exception handling.** `TypeRef::Tag` imports are
+  rejected at parse time.
+- **Shell imports.** The linker rejects any shell with non-empty
+  imports as a sanity check. The shell template generates a
+  self-contained module so this is naturally satisfied; adding
+  shell-import forwarding is a single-pass extension.
+- **Custom-section ordering edge cases.** Customs are tagged with
+  the most recently seen non-custom section and re-emitted in that
+  position. For the canonical wasm shapes rustc + wit-bindgen
+  produce this is exact; pathological inputs (e.g. customs between
+  Code body entries) would land in the section's trailing position
+  rather than mid-section. No known consumer hits this.
 
 ## Worked example: the rust-cdylib-consumer
 
