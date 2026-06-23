@@ -23,6 +23,32 @@ tvm-mm-link \
 
 Defaults: 64 pools, 1 initial page per pool, 65536 max pages per pool.
 
+### Memory-export aliases
+
+`--alias-memory0=<name>` adds an additional `(export "<name>" (memory 0))`
+to the merged module — the same memory the shell already exports as
+`mem0`, just under a second name. Typical use:
+
+```sh
+tvm-mm-link --alias-memory0=memory --user my_workload.wasm -o linked.wasm
+```
+
+The merged module then gains an export literally named `memory`, which
+is what `wasm-tools component new` looks for when picking the default
+linear memory of a component-model adapter. Without it, the component
+shape can't be inferred and `wasm-tools component new` rejects the
+merged module.
+
+For aliasing arbitrary pool memories, use the general form:
+
+```sh
+tvm-mm-link --alias-memory 1=hot_memory --alias-memory 2=warm_memory \
+  --user my_workload.wasm -o linked.wasm
+```
+
+The flag may be repeated. Out-of-range indices and aliases that collide
+with an existing export name are rejected at link time.
+
 ## Library
 
 ```rust
@@ -39,6 +65,18 @@ Or, for callers that already have the shell bytes:
 ```rust
 use tvm_guest_mm_link::link;
 let linked_bytes = link(&shell_bytes, &user_bytes)?;
+```
+
+To pass options (e.g. memory-export aliases) use the `_with_options`
+entry points:
+
+```rust
+use tvm_guest_mm_link::{link_with_options, LinkOptions};
+
+let options = LinkOptions {
+    aliases: vec![("memory".into(), 0)],
+};
+let linked_bytes = link_with_options(&shell_bytes, &user_bytes, &options)?;
 ```
 
 The shell bytes can be produced from

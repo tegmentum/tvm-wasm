@@ -94,6 +94,22 @@ pub use tvm_guest_mm::{tvm_guest_mm_module_template, ModuleParams, DEFAULT_POOL_
 /// the shell's exports during linking.
 pub const TVM_MM_IMPORT_MODULE: &str = "tvm_mm";
 
+/// Linker options that modulate the merged-module output. Defaults
+/// preserve the historical zero-knobs behavior.
+#[derive(Debug, Default, Clone)]
+pub struct LinkOptions {
+    /// Additional memory export aliases. For each `(name, idx)` entry
+    /// the merged module gains an `(export "<name>" (memory <idx>))`
+    /// pointing at the merged module's memory at index `<idx>` (which
+    /// corresponds to the shell's pool `<idx>`).
+    ///
+    /// Common use: `aliases = [("memory".into(), 0)]` makes the merged
+    /// module satisfy `wasm-tools component new`, which looks for an
+    /// export literally named `memory` when identifying the default
+    /// linear memory of a component-model adapter.
+    pub aliases: Vec<(String, u32)>,
+}
+
 /// Link a user cdylib core wasm against the shell. Returns the merged
 /// core wasm bytes.
 ///
@@ -106,6 +122,17 @@ pub const TVM_MM_IMPORT_MODULE: &str = "tvm_mm";
 /// remaining `tvm_mm` imports. Validation is left to the caller (use
 /// `wasmparser::Validator` or `wasmtime::Module::new`).
 pub fn link(shell_bytes: &[u8], user_bytes: &[u8]) -> Result<Vec<u8>> {
+    link_with_options(shell_bytes, user_bytes, &LinkOptions::default())
+}
+
+/// Variant of [`link`] that takes a [`LinkOptions`] for additional
+/// merged-module knobs (memory-export aliases, etc.). Defaults preserve
+/// the [`link`] behavior.
+pub fn link_with_options(
+    shell_bytes: &[u8],
+    user_bytes: &[u8],
+    options: &LinkOptions,
+) -> Result<Vec<u8>> {
     let shell = parse_module(shell_bytes).context("parsing shell module")?;
     let user = parse_module(user_bytes).context("parsing user module")?;
 
@@ -457,6 +484,48 @@ pub fn link(shell_bytes: &[u8], user_bytes: &[u8]) -> Result<Vec<u8>> {
                 map_user_table,
                 map_user_memory_strict,
                 map_user_global,
+            );
+        }
+        // Memory-export aliases (LinkOptions::aliases). Each (name,
+        // idx) becomes an extra `(export "<name>" (memory <idx>))`.
+        // The shell already exports pool memories as `mem0..memN`; the
+        // alias is purely a second handle to the same memory. Reject
+        // out-of-range indices and aliases that would shadow an
+        // already-emitted export name.
+        let shell_mem_count = shell.memories.len() as u32;
+        let mut existing_names: std::collections::HashSet<&str> =
+            shell.exports.iter().map(|e| e.name).collect();
+        for e in &user.exports {
+            if matches!(e.kind, ExternalKind::Memory) {
+                continue;
+            }
+            if matches!(
+                e.name,
+                "__data_end" | "__heap_base" | "__indirect_function_table"
+            ) {
+                continue;
+            }
+            existing_names.insert(e.name);
+        }
+        for (alias_name, mem_idx) in &options.aliases {
+            if *mem_idx >= shell_mem_count {
+                bail!(
+                    "alias `{}` references memory index {} but the merged module only has {} memories",
+                    alias_name,
+                    mem_idx,
+                    shell_mem_count
+                );
+            }
+            if existing_names.contains(alias_name.as_str()) {
+                bail!(
+                    "alias `{}` collides with an existing export of the merged module",
+                    alias_name
+                );
+            }
+            exports.export(
+                alias_name,
+                wasm_encoder::ExportKind::Memory,
+                *mem_idx,
             );
         }
         module.section(&exports);
@@ -1834,9 +1903,19 @@ pub fn link_from_wat(shell_wat: &str, user_bytes: &[u8]) -> Result<Vec<u8>> {
 /// using `tvm_guest_mm_module_template(&params)` and links the user
 /// module against it.
 pub fn link_with_params(params: &ModuleParams, user_bytes: &[u8]) -> Result<Vec<u8>> {
+    link_with_params_and_options(params, user_bytes, &LinkOptions::default())
+}
+
+/// Variant of [`link_with_params`] that takes a [`LinkOptions`] for
+/// additional merged-module knobs.
+pub fn link_with_params_and_options(
+    params: &ModuleParams,
+    user_bytes: &[u8],
+    options: &LinkOptions,
+) -> Result<Vec<u8>> {
     let shell_wat = tvm_guest_mm_module_template(params);
     let shell_bytes = wat_text_to_bytes(&shell_wat)?;
-    link(&shell_bytes, user_bytes)
+    link_with_options(&shell_bytes, user_bytes, options)
 }
 
 fn wat_text_to_bytes(wat_text: &str) -> Result<Vec<u8>> {

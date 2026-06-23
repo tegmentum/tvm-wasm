@@ -176,6 +176,22 @@ exports:
 And it imports nothing. Confirm with `wasm-tools print` or the
 component-model wit inspector:
 
+### Optional: alias memory 0 as `memory` for `wasm-tools component new`
+
+When the merged module is destined to be wrapped as a component (via
+`wasm-tools component new`), wasm-tools looks for an export literally
+named `memory` when picking the default linear memory of the adapter.
+The shell only exports pool memories as `mem0..memN`, so add the alias
+at link time:
+
+```sh
+tvm-mm-link --alias-memory0=memory --user my_workload.wasm -o linked.wasm
+```
+
+This emits an extra `(export "memory" (memory 0))` pointing at the same
+memory the shell exports as `mem0`. The `--alias-memory <idx>=<name>`
+general form aliases any pool memory.
+
 ```sh
 wasm-tools print my_tvm_workload.linked.wasm | grep '(import' || echo "no imports"
 # → no imports
