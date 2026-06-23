@@ -21,6 +21,7 @@ exclude = [
     "examples/multimem-probe",
     "examples/rust-cdylib-consumer",
     "examples/rust-cdylib-consumer-with-imports",
+    "examples/rust-cdylib-consumer-indirect",
     "bench-framework/workloads/m32",
     "bench-framework/workloads/m64",
     "bench-framework/workloads/tvm",

@@ -1802,6 +1802,27 @@ fn const_expr_to_encoder(expr: ConstExpr<'_>) -> Result<wasm_encoder::ConstExpr>
 }
 
 fn decode_const_expr_to_encoder(expr: &ConstExpr<'_>) -> Result<wasm_encoder::ConstExpr> {
+    // Identity remap — used where no renumbering is needed (e.g. shell
+    // const-exprs in the strict-tvm_mm-only path, or active-element
+    // offsets that are always `i32.const N`).
+    decode_const_expr_with_remap(expr, |i| i, |i| i)
+}
+
+/// Decode a wasmparser `ConstExpr` into a `wasm_encoder::ConstExpr`,
+/// applying `map_func` to any `ref.func N` operand and `map_global` to
+/// any `global.get N` operand. This is what element-segment Expression
+/// items need post-import-forwarding: each `ref.func N` carries a
+/// function index in the input module's space, which must be shifted
+/// into the merged module's space.
+fn decode_const_expr_with_remap<FF, FG>(
+    expr: &ConstExpr<'_>,
+    map_func: FF,
+    map_global: FG,
+) -> Result<wasm_encoder::ConstExpr>
+where
+    FF: Fn(u32) -> u32,
+    FG: Fn(u32) -> u32,
+{
     use wasm_encoder::ConstExpr as CE;
     let mut reader = expr.get_operators_reader();
     let op = reader.read()?;
@@ -1811,7 +1832,8 @@ fn decode_const_expr_to_encoder(expr: &ConstExpr<'_>) -> Result<wasm_encoder::Co
         Operator::F32Const { value } => CE::f32_const(wasm_encoder::Ieee32::new(value.bits())),
         Operator::F64Const { value } => CE::f64_const(wasm_encoder::Ieee64::new(value.bits())),
         Operator::RefNull { hty } => CE::ref_null(heap_type_to_encoder(hty)?),
-        Operator::GlobalGet { global_index } => CE::global_get(global_index),
+        Operator::GlobalGet { global_index } => CE::global_get(map_global(global_index)),
+        Operator::RefFunc { function_index } => CE::ref_func(map_func(function_index)),
         other => bail!("unsupported const-expr opcode: {:?}", other),
     };
     // Expect the End operator next.
@@ -1862,13 +1884,23 @@ where
     let exprs_buf: Vec<wasm_encoder::ConstExpr>;
     let elements = match &el.items {
         ElementItemsCaptured::Functions(items) => {
+            // Direct function-index entries — apply the shift.
             funcs_buf = items.iter().map(|f| map_func(*f)).collect();
             Elements::Functions(Cow::Borrowed(&funcs_buf))
         }
         ElementItemsCaptured::Expressions(ref_ty, exprs) => {
+            // Expression-form entries — each is a const-expr typically
+            // containing `ref.func N` (modern LLVM + wit-bindgen
+            // emit this shape). Apply the func-index shift to the
+            // operand of every ref.func; without this, indirect calls
+            // through the table land on the wrong function and the
+            // module traps at instantiation with an out-of-bounds
+            // table access. Globals in const-exprs go untranslated
+            // since neither input is expected to use global.get in an
+            // element item (rustc cdylibs don't emit this).
             exprs_buf = exprs
                 .iter()
-                .map(|e| decode_const_expr_to_encoder(e))
+                .map(|e| decode_const_expr_with_remap(e, &map_func, |g| g))
                 .collect::<Result<Vec<_>>>()?;
             Elements::Expressions(*ref_ty, Cow::Borrowed(&exprs_buf))
         }
@@ -1884,7 +1916,25 @@ where
             table_index,
             offset,
         } => {
-            let table_idx = table_index.map(map_table);
+            // CRITICAL: wasmparser surfaces the "default table" form
+            // (where the wasm encoding omits the table index, which
+            // means table 0) as `table_index == None`. The
+            // wasm_encoder side encodes `Option::None` the same way —
+            // as default table 0. But in the merged module, "table
+            // 0" is the SHELL's first table, not the user's.
+            //
+            // So if a user element segment uses the default-table
+            // shape (the rustc default for the single
+            // `__indirect_function_table`), we MUST materialize it as
+            // explicit `Some(map_table(0))` so it ends up writing to
+            // the user's renumbered table, not the shell's table 0.
+            // Same logic applies for the shell side when forwarded
+            // imports shift the shell's table-index space — but the
+            // shell always declares an explicit table index in
+            // practice; the safe rule is "always materialize".
+            let table_idx = Some(map_table(table_index.unwrap_or(0)));
+            // Active-element offset is an i32.const in practice; the
+            // identity decoder is fine here.
             let offset = decode_const_expr_to_encoder(offset)?;
             elems.active(table_idx, &offset, elements);
         }

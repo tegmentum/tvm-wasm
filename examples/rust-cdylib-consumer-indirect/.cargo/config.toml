@@ -1,0 +1,11 @@
+# Force the wasm reference-types feature on so LLVM emits the
+# element segment in the "expression" form ((ref.func N) const-exprs)
+# rather than the compact Functions(...) form. The expression form is
+# the shape wit-bindgen produces and is the path the linker's
+# element-segment renumbering specifically has to handle.
+
+[build]
+rustflags = ["-C", "target-feature=+reference-types"]
+
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+reference-types"]
