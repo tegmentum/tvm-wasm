@@ -345,59 +345,92 @@ pub fn link_with_options(
 
     let mut module = wasm_encoder::Module::new();
 
+    // ----------------------------------------------------------------
+    // Merge the shell and user `name` custom sections into a single
+    // remapped section before the section-by-section emit loop.
+    //
+    // The user's `name` custom section names entries by index in the
+    // user's pre-link index space; the merged module shifts those
+    // indices (by `fwd_func_count + shell_func_count` for functions,
+    // etc.), so every name has to be remapped or it points at the
+    // wrong entry. The shell may have its own `name` section (the
+    // WAT-compiled shell emits one). If both are present they would
+    // otherwise land as two separate `name` customs in the output —
+    // legal but ambiguous: wasmtime's name parser feeds both into a
+    // `HashMap::insert`, so the second one's entries for any shared
+    // index overwrite the first's, and consumers reading the binary
+    // can't tell which is authoritative. Merge into one.
+    //
+    // We emit the merged section at the user's name-section position
+    // if any (typically after Code), otherwise at the shell's
+    // position. Other customs continue to flow through verbatim.
+    let merged_name_section: Option<(Option<SectionMarker>, Vec<u8>)> = {
+        let shell_name = shell
+            .custom_sections
+            .iter()
+            .find(|cs| cs.name == "name");
+        let user_name = user
+            .custom_sections
+            .iter()
+            .find(|cs| cs.name == "name");
+        let mut entries = NameSectionEntries::default();
+        if let Some(cs) = shell_name {
+            entries.absorb(
+                cs.data,
+                &map_shell_func,
+                &map_shell_global,
+                &map_shell_table,
+                &|t| t,
+            )?;
+        }
+        if let Some(cs) = user_name {
+            entries.absorb(
+                cs.data,
+                &map_user_func,
+                &map_user_global,
+                &map_user_table,
+                &map_user_type,
+            )?;
+        }
+        // Position: prefer user's marker (typically after Code), fall
+        // back to shell's. If neither side had a name section, emit
+        // nothing.
+        let pos = user_name.map(|cs| cs.after).or_else(|| shell_name.map(|cs| cs.after));
+        pos.map(|p| (p, entries.into_bytes()))
+    };
+
     // Emits all custom sections from `shell` then `user` whose
     // captured marker matches `marker` (or whose marker is `None`
     // when `marker` is `None`). Most customs are written verbatim —
     // name + raw bytes — so positional sections like component-type
     // sections (typically at the end of the module) land where they
-    // belong.
-    //
-    // The user's `name` custom section is a special case: its
-    // function/global/table/etc. subsections name entries by index in
-    // the user's pre-link index space. The merged module shifts those
-    // indices (by `fwd_func_count + shell_func_count` for functions,
-    // etc.), so the name section needs the same shift or every name
-    // points at the wrong entry — wreaking havoc on every tool that
-    // reads symbols, including wasmtime tracebacks. The shell's name
-    // section (if any — there isn't one today, since the shell is
-    // WAT-compiled) is also remapped via the shell-side maps.
+    // belong. The `name` custom is special: we replaced both inputs'
+    // copies with a single merged + remapped section (see above), so
+    // we skip emitting the originals and emit the merged blob at the
+    // chosen position.
     let emit_customs = |module: &mut wasm_encoder::Module,
                         marker: Option<SectionMarker>|
      -> Result<()> {
-        // Shell side first, then user side. We track which side we're
-        // on so we can pick the right index remappers for the `name`
-        // section's contents.
-        let shell_iter = shell.custom_sections.iter().map(|cs| (CustomSide::Shell, cs));
-        let user_iter = user.custom_sections.iter().map(|cs| (CustomSide::User, cs));
-        for (side, cs) in shell_iter.chain(user_iter) {
-            if cs.after != marker {
+        for cs in shell
+            .custom_sections
+            .iter()
+            .chain(user.custom_sections.iter())
+        {
+            if cs.after != marker || cs.name == "name" {
                 continue;
             }
-            if cs.name == "name" {
-                let remapped = match side {
-                    CustomSide::Shell => remap_name_section_data(
-                        cs.data,
-                        &map_shell_func,
-                        &map_shell_global,
-                        &map_shell_table,
-                        &|t| t,
-                    )?,
-                    CustomSide::User => remap_name_section_data(
-                        cs.data,
-                        &map_user_func,
-                        &map_user_global,
-                        &map_user_table,
-                        &map_user_type,
-                    )?,
-                };
+            module.section(&wasm_encoder::CustomSection {
+                name: std::borrow::Cow::Borrowed(cs.name),
+                data: std::borrow::Cow::Borrowed(cs.data),
+            });
+        }
+        // Emit the merged name section if its target position
+        // matches `marker`.
+        if let Some((pos, data)) = &merged_name_section {
+            if *pos == marker {
                 module.section(&wasm_encoder::CustomSection {
                     name: std::borrow::Cow::Borrowed("name"),
-                    data: std::borrow::Cow::Owned(remapped),
-                });
-            } else {
-                module.section(&wasm_encoder::CustomSection {
-                    name: std::borrow::Cow::Borrowed(cs.name),
-                    data: std::borrow::Cow::Borrowed(cs.data),
+                    data: std::borrow::Cow::Borrowed(data),
                 });
             }
         }
@@ -708,179 +741,233 @@ fn map_user_memory_strict(m: u32) -> u32 {
 /// remappers when the section is a `name` section whose contents need
 /// translation into the merged module's index space.
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 enum CustomSide {
     Shell,
     User,
 }
 
-/// Decode a `name` custom section's payload, remap every function /
-/// global / table / type / memory index that appears inside the
-/// per-subsection name maps, and re-encode. The shape of the section
-/// is preserved: subsection order, the set of subsections, and the
-/// (index, name) tuples within each map.
-///
-/// The Module name subsection (subsection id 0) and Unknown
-/// subsections are passed through verbatim — they hold no indices we
-/// need to rewrite.
-///
-/// Memory and data-segment indices are passed through unchanged: the
-/// merged module reuses the user's data segments at the same indices,
-/// and the user's only declared memory (memory 0) maps to the merged
-/// module's memory 0 (shell pool 0). Element-segment indices are
-/// likewise unchanged because element segments are merged shell-first
-/// then user, and the user's name section only references user-side
-/// element segments — but we don't currently shift those, so they
-/// would point at the wrong segment in the merged module. In practice
-/// rustc cdylibs don't emit element-segment names, so we leave that
-/// for a follow-up.
-fn remap_name_section_data<FF, FG, FT, FTy>(
-    data: &[u8],
-    map_func: &FF,
-    map_global: &FG,
-    map_table: &FT,
-    map_type: &FTy,
-) -> Result<Vec<u8>>
-where
-    FF: Fn(u32) -> u32,
-    FG: Fn(u32) -> u32,
-    FT: Fn(u32) -> u32,
-    FTy: Fn(u32) -> u32,
-{
-    use wasmparser::Name;
-    let reader =
-        wasmparser::NameSectionReader::new(wasmparser::BinaryReader::new(data, 0));
-    let mut out = wasm_encoder::NameSection::new();
-    for sub in reader {
-        let sub = sub.context("decoding name-section subsection")?;
-        match sub {
-            Name::Module { name, .. } => {
-                out.module(name);
-            }
-            Name::Function(map) => {
-                let remapped = remap_name_map(map, map_func)?;
-                out.functions(&remapped);
-            }
-            Name::Local(map) => {
-                // Local names: indirect map keyed by function index;
-                // inner map is local index within that function.
-                // Remap only the outer function index; locals are
-                // intra-function and unaffected by the merge.
-                let remapped = remap_indirect_name_map(map, map_func, &|i| i)?;
-                out.locals(&remapped);
-            }
-            Name::Label(map) => {
-                // Labels: keyed by function index; inner is label
-                // index within the function (unchanged).
-                let remapped = remap_indirect_name_map(map, map_func, &|i| i)?;
-                out.labels(&remapped);
-            }
-            Name::Type(map) => {
-                let remapped = remap_name_map(map, map_type)?;
-                out.types(&remapped);
-            }
-            Name::Table(map) => {
-                let remapped = remap_name_map(map, map_table)?;
-                out.tables(&remapped);
-            }
-            Name::Memory(map) => {
-                // The merged module reuses memory 0 for the user's
-                // default; pass indices through.
-                let remapped = remap_name_map(map, &|i| i)?;
-                out.memories(&remapped);
-            }
-            Name::Global(map) => {
-                let remapped = remap_name_map(map, map_global)?;
-                out.globals(&remapped);
-            }
-            Name::Element(map) => {
-                // Element-segment indices aren't shifted today; pass
-                // through. See the note in this function's doc
-                // comment.
-                let remapped = remap_name_map(map, &|i| i)?;
-                out.elements(&remapped);
-            }
-            Name::Data(map) => {
-                // Data-segment indices: pass through (shell + user
-                // data segments concatenate; user-side names reference
-                // user-side segments only if we shifted them, but
-                // current rustc output doesn't name data segments).
-                let remapped = remap_name_map(map, &|i| i)?;
-                out.data(&remapped);
-            }
-            Name::Field(map) => {
-                // GC types: pass through (we reject non-func composite
-                // types upstream, so this path shouldn't fire).
-                let remapped = remap_indirect_name_map(map, map_type, &|i| i)?;
-                out.fields(&remapped);
-            }
-            Name::Tag(map) => {
-                // Exception tags: we reject tag imports upstream, but
-                // a user-defined tag could in principle appear. The
-                // tag index space is currently empty so pass-through
-                // is fine.
-                let remapped = remap_name_map(map, &|i| i)?;
-                out.tag(&remapped);
-            }
-            Name::Unknown { ty, data, .. } => {
-                out.raw(ty, data);
-            }
-        }
-    }
-    Ok(out.as_custom().data.into_owned())
+/// In-flight builder for the merged `name` custom section. Accumulates
+/// per-subsection (index, name) tuples from both the shell and the
+/// user inputs after each side's indices have been remapped through
+/// the appropriate per-kind map. On `into_bytes` we emit the standard
+/// `name` section layout, with each subsection's entries sorted by
+/// merged-module index and de-duplicated (first occurrence wins for
+/// any colliding indices — which only happens for `tvm_mm`-rewired
+/// imports, where the shell and user names for the same function are
+/// equivalent anyway).
+#[derive(Default)]
+struct NameSectionEntries {
+    module_name: Option<String>,
+    functions: Vec<(u32, String)>,
+    locals: Vec<(u32, Vec<(u32, String)>)>,
+    labels: Vec<(u32, Vec<(u32, String)>)>,
+    types: Vec<(u32, String)>,
+    tables: Vec<(u32, String)>,
+    memories: Vec<(u32, String)>,
+    globals: Vec<(u32, String)>,
+    elements: Vec<(u32, String)>,
+    data_segments: Vec<(u32, String)>,
+    fields: Vec<(u32, Vec<(u32, String)>)>,
+    tags: Vec<(u32, String)>,
+    /// Unknown subsections (by id, raw bytes). Passed through verbatim
+    /// in insertion order; multiple appearances of the same id stack
+    /// up.
+    unknown: Vec<(u8, Vec<u8>)>,
 }
 
-fn remap_name_map<F>(
-    map: wasmparser::NameMap<'_>,
-    remap: &F,
-) -> Result<wasm_encoder::NameMap>
-where
-    F: Fn(u32) -> u32,
-{
-    // The encoder's `NameMap::append` requires strictly ascending
-    // indices. After remapping, the user's original ascending order
-    // may not survive (the remap can interleave shell+user index
-    // ranges), so collect, sort, and dedup-by-index before encoding.
-    let mut entries: Vec<(u32, &str)> = Vec::new();
-    for n in map {
-        let n = n.context("decoding name-map entry")?;
-        entries.push((remap(n.index), n.name));
+impl NameSectionEntries {
+    fn absorb<FF, FG, FT, FTy>(
+        &mut self,
+        data: &[u8],
+        map_func: &FF,
+        map_global: &FG,
+        map_table: &FT,
+        map_type: &FTy,
+    ) -> Result<()>
+    where
+        FF: Fn(u32) -> u32,
+        FG: Fn(u32) -> u32,
+        FT: Fn(u32) -> u32,
+        FTy: Fn(u32) -> u32,
+    {
+        use wasmparser::Name;
+        let reader = wasmparser::NameSectionReader::new(
+            wasmparser::BinaryReader::new(data, 0),
+        );
+        for sub in reader {
+            let sub = sub.context("decoding name-section subsection")?;
+            match sub {
+                Name::Module { name, .. } => {
+                    if self.module_name.is_none() {
+                        self.module_name = Some(name.to_string());
+                    }
+                }
+                Name::Function(map) => {
+                    for n in map {
+                        let n = n.context("decoding function-name entry")?;
+                        self.functions.push((map_func(n.index), n.name.to_string()));
+                    }
+                }
+                Name::Local(map) => {
+                    for ind in map {
+                        let ind = ind.context("decoding local-name entry")?;
+                        let mut inner = Vec::new();
+                        for n in ind.names {
+                            let n = n?;
+                            inner.push((n.index, n.name.to_string()));
+                        }
+                        self.locals.push((map_func(ind.index), inner));
+                    }
+                }
+                Name::Label(map) => {
+                    for ind in map {
+                        let ind = ind.context("decoding label-name entry")?;
+                        let mut inner = Vec::new();
+                        for n in ind.names {
+                            let n = n?;
+                            inner.push((n.index, n.name.to_string()));
+                        }
+                        self.labels.push((map_func(ind.index), inner));
+                    }
+                }
+                Name::Type(map) => {
+                    for n in map {
+                        let n = n.context("decoding type-name entry")?;
+                        self.types.push((map_type(n.index), n.name.to_string()));
+                    }
+                }
+                Name::Table(map) => {
+                    for n in map {
+                        let n = n.context("decoding table-name entry")?;
+                        self.tables.push((map_table(n.index), n.name.to_string()));
+                    }
+                }
+                Name::Memory(map) => {
+                    for n in map {
+                        let n = n.context("decoding memory-name entry")?;
+                        // Memory indices pass through; the merge only
+                        // reuses memory 0 = pool 0 for the user's
+                        // default memory.
+                        self.memories.push((n.index, n.name.to_string()));
+                    }
+                }
+                Name::Global(map) => {
+                    for n in map {
+                        let n = n.context("decoding global-name entry")?;
+                        self.globals.push((map_global(n.index), n.name.to_string()));
+                    }
+                }
+                Name::Element(map) => {
+                    for n in map {
+                        let n = n.context("decoding element-name entry")?;
+                        self.elements.push((n.index, n.name.to_string()));
+                    }
+                }
+                Name::Data(map) => {
+                    for n in map {
+                        let n = n.context("decoding data-name entry")?;
+                        self.data_segments.push((n.index, n.name.to_string()));
+                    }
+                }
+                Name::Field(map) => {
+                    for ind in map {
+                        let ind = ind.context("decoding field-name entry")?;
+                        let mut inner = Vec::new();
+                        for n in ind.names {
+                            let n = n?;
+                            inner.push((n.index, n.name.to_string()));
+                        }
+                        self.fields.push((map_type(ind.index), inner));
+                    }
+                }
+                Name::Tag(map) => {
+                    for n in map {
+                        let n = n.context("decoding tag-name entry")?;
+                        self.tags.push((n.index, n.name.to_string()));
+                    }
+                }
+                Name::Unknown { ty, data, .. } => {
+                    self.unknown.push((ty, data.to_vec()));
+                }
+            }
+        }
+        Ok(())
     }
+
+    fn into_bytes(mut self) -> Vec<u8> {
+        let mut out = wasm_encoder::NameSection::new();
+        if let Some(name) = &self.module_name {
+            out.module(name);
+        }
+        if !self.functions.is_empty() {
+            out.functions(&sorted_unique(&mut self.functions));
+        }
+        if !self.locals.is_empty() {
+            out.locals(&sorted_unique_indirect(&mut self.locals));
+        }
+        if !self.labels.is_empty() {
+            out.labels(&sorted_unique_indirect(&mut self.labels));
+        }
+        if !self.types.is_empty() {
+            out.types(&sorted_unique(&mut self.types));
+        }
+        if !self.tables.is_empty() {
+            out.tables(&sorted_unique(&mut self.tables));
+        }
+        if !self.memories.is_empty() {
+            out.memories(&sorted_unique(&mut self.memories));
+        }
+        if !self.globals.is_empty() {
+            out.globals(&sorted_unique(&mut self.globals));
+        }
+        if !self.elements.is_empty() {
+            out.elements(&sorted_unique(&mut self.elements));
+        }
+        if !self.data_segments.is_empty() {
+            out.data(&sorted_unique(&mut self.data_segments));
+        }
+        if !self.fields.is_empty() {
+            out.fields(&sorted_unique_indirect(&mut self.fields));
+        }
+        if !self.tags.is_empty() {
+            out.tag(&sorted_unique(&mut self.tags));
+        }
+        for (ty, data) in &self.unknown {
+            out.raw(*ty, data);
+        }
+        out.as_custom().data.into_owned()
+    }
+}
+
+fn sorted_unique(entries: &mut Vec<(u32, String)>) -> wasm_encoder::NameMap {
     entries.sort_by_key(|(idx, _)| *idx);
-    // Drop duplicate indices defensively — a well-formed input
-    // shouldn't have any, but post-remap collisions would corrupt the
-    // section.
     entries.dedup_by_key(|(idx, _)| *idx);
     let mut out = wasm_encoder::NameMap::new();
     for (idx, name) in entries {
-        out.append(idx, name);
+        out.append(*idx, name);
     }
-    Ok(out)
+    out
 }
 
-fn remap_indirect_name_map<FOuter, FInner>(
-    map: wasmparser::IndirectNameMap<'_>,
-    remap_outer: &FOuter,
-    remap_inner: &FInner,
-) -> Result<wasm_encoder::IndirectNameMap>
-where
-    FOuter: Fn(u32) -> u32,
-    FInner: Fn(u32) -> u32,
-{
-    let mut entries: Vec<(u32, wasm_encoder::NameMap)> = Vec::new();
-    for ind in map {
-        let ind = ind.context("decoding indirect name-map entry")?;
-        let inner = remap_name_map(ind.names, remap_inner)?;
-        entries.push((remap_outer(ind.index), inner));
-    }
+fn sorted_unique_indirect(
+    entries: &mut Vec<(u32, Vec<(u32, String)>)>,
+) -> wasm_encoder::IndirectNameMap {
     entries.sort_by_key(|(idx, _)| *idx);
-    // Same ascending-index requirement as remap_name_map.
     entries.dedup_by(|a, b| a.0 == b.0);
     let mut out = wasm_encoder::IndirectNameMap::new();
-    for (idx, names) in entries {
-        out.append(idx, &names);
+    for (idx, inner) in entries {
+        inner.sort_by_key(|(i, _)| *i);
+        inner.dedup_by_key(|(i, _)| *i);
+        let mut name_map = wasm_encoder::NameMap::new();
+        for (i, name) in inner {
+            name_map.append(*i, name);
+        }
+        out.append(*idx, &name_map);
     }
-    Ok(out)
+    out
 }
+
 
 // ----------------------------------------------------------------
 // Parser model — what we extract from each input module.
