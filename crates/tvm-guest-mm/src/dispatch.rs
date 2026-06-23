@@ -110,24 +110,52 @@ pub(crate) fn emit_bulk_copy_dispatcher(n_pools: u32) -> String {
         "    (if (i32.ge_u (local.get $src_pool) (i32.const {n})) (then unreachable))\n",
         n = n_pools,
     ));
-    let body = build_copy_bst(/*to_default=*/ true, "src_pool", 0, n_pools);
+    let body = build_copy_bst_with_grow(
+        /*to_default=*/ true,
+        "src_pool",
+        /*grow_dst=*/ false,
+        0,
+        n_pools,
+    );
     indent_into(&mut s, &body, 4);
     s.push_str("  )\n");
     s
 }
 
 /// Symmetric: copy from default memory into a runtime-selected pool.
+///
+/// Before issuing the copy, this dispatcher grows the target pool on
+/// demand to cover `dst_off + len`. The user / forwarded import side
+/// of the merged module can't `memory.grow` a pool directly (rustc
+/// cdylib code only references memory 0); without auto-grow the
+/// dispatcher would trap any time a write crosses the pool's
+/// `initial_pages` boundary. With auto-grow, callers can address up
+/// to `max_pages` worth of bytes per pool without coordinating
+/// memory.grow at every call site.
 pub(crate) fn emit_bulk_copy_from_default_dispatcher(n_pools: u32) -> String {
     let mut s = String::new();
     s.push_str(
         "  (func $tvm_copy_from_default (export \"tvm_copy_from_default\")\n        \
-         (param $dst_pool i32) (param $dst_off i32) (param $src_off i32) (param $len i32)\n",
+         (param $dst_pool i32) (param $dst_off i32) (param $src_off i32) (param $len i32)\n        \
+         (local $end i32)\n",
     );
     s.push_str(&format!(
         "    (if (i32.ge_u (local.get $dst_pool) (i32.const {n})) (then unreachable))\n",
         n = n_pools,
     ));
-    let body = build_copy_bst(/*to_default=*/ false, "dst_pool", 0, n_pools);
+    // Compute end = dst_off + len; trap on u32 overflow.
+    s.push_str(
+        "    (local.set $end (i32.add (local.get $dst_off) (local.get $len)))\n\
+         \
+             (if (i32.lt_u (local.get $end) (local.get $dst_off)) (then unreachable))\n",
+    );
+    let body = build_copy_bst_with_grow(
+        /*to_default=*/ false,
+        "dst_pool",
+        /*grow_dst=*/ true,
+        0,
+        n_pools,
+    );
     indent_into(&mut s, &body, 4);
     s.push_str("  )\n");
     s
@@ -666,15 +694,31 @@ pub(crate) fn emit_specialized_copy_helpers(n_pools: u32) -> String {
         // The internal `$tvm_copy_to_default_pK` name lets in-module
         // user code call these directly; the export name lets host
         // code call them when needed.
+        //
+        // `tvm_copy_to_default_p{K}` reads pool K → default memory.
+        // No auto-grow on the source pool (reading past the pool's
+        // size is a genuine error and should trap loud), and the
+        // destination (default memory) is the user's responsibility
+        // to size — pool 0 is already linked to the user's default
+        // memory and grows via the user's own `memory.grow`.
         s.push_str(&format!(
             "  (func $tvm_copy_to_default_p{k} (export \"tvm_copy_to_default_p{k}\")\n        \
              (param $src_off i32) (param $dst_off i32) (param $len i32)\n    \
              (memory.copy 0 {k} (local.get $dst_off) (local.get $src_off) (local.get $len)))\n",
             k = k,
         ));
+        // `tvm_copy_from_default_p{K}` writes default memory → pool
+        // K. The dispatcher must grow pool K on demand because user
+        // code can't issue `memory.grow K` directly. Mirrors the
+        // grow-then-copy behavior in the runtime-dispatched
+        // `tvm_copy_from_default` for the same reason.
         s.push_str(&format!(
             "  (func $tvm_copy_from_default_p{k} (export \"tvm_copy_from_default_p{k}\")\n        \
-             (param $dst_off i32) (param $src_off i32) (param $len i32)\n    \
+             (param $dst_off i32) (param $src_off i32) (param $len i32)\n        \
+             (local $end i32)\n    \
+             (local.set $end (i32.add (local.get $dst_off) (local.get $len)))\n    \
+             (if (i32.lt_u (local.get $end) (local.get $dst_off)) (then unreachable))\n    \
+             (if (i32.gt_u\n          (i32.shr_u (i32.add (local.get $end) (i32.const 65535)) (i32.const 16))\n          (memory.size {k}))\n      (then\n        (drop\n          (memory.grow {k}\n            (i32.sub\n              (i32.shr_u (i32.add (local.get $end) (i32.const 65535)) (i32.const 16))\n              (memory.size {k}))))))\n    \
              (memory.copy {k} 0 (local.get $dst_off) (local.get $src_off) (local.get $len)))\n",
             k = k,
         ));
@@ -877,24 +921,52 @@ fn build_store_bst(op: &str, lo: u32, hi: u32) -> String {
 /// Build a balanced BST over `[lo, hi)` issuing one `memory.copy` per
 /// leaf. Direction is encoded by `to_default`: true = pool→default,
 /// false = default→pool. The runtime-pool param is named via
-/// `pool_param`.
-fn build_copy_bst(to_default: bool, pool_param: &str, lo: u32, hi: u32) -> String {
+/// `pool_param`. When `grow_dst` is true, each leaf preambles the
+/// copy with a `memory.grow` call against the destination pool to
+/// cover `(dst_off + len)`; the dispatcher is expected to have set up
+/// a `$end` local holding `dst_off + len` and to have already trapped
+/// on `$end < dst_off` (u32 overflow). For pool→default copies the
+/// destination is memory 0 (the default), which grows independently
+/// and is the user's responsibility, so `grow_dst` is unused in that
+/// direction.
+fn build_copy_bst_with_grow(
+    to_default: bool,
+    pool_param: &str,
+    grow_dst: bool,
+    lo: u32,
+    hi: u32,
+) -> String {
     debug_assert!(lo < hi);
+    debug_assert!(!grow_dst || !to_default, "grow_dst only makes sense for default→pool");
     if hi - lo == 1 {
         let (dst_mem, src_mem) = if to_default { (0, lo) } else { (lo, 0) };
         // For pool→default, params are (src_pool, src_off, dst_off, len).
         // For default→pool, params are (dst_pool, dst_off, src_off, len).
         // The emitted instruction is identical either way; direction is
         // already encoded in (dst_mem, src_mem) above.
-        return format!(
+        let copy = format!(
             "(memory.copy {dst} {src} (local.get $dst_off) (local.get $src_off) (local.get $len))\n",
             dst = dst_mem,
             src = src_mem,
         );
+        if grow_dst {
+            // Grow pool `lo` to cover `$end` bytes if it isn't
+            // already that big. Page count is `ceil($end / 65536)`,
+            // computed as `($end + 65535) >> 16`. If the grow fails
+            // (returns -1), let the subsequent memory.copy trap with
+            // the natural OOB error — same behavior as before this
+            // change.
+            return format!(
+                "(if (i32.gt_u\n      (i32.shr_u (i32.add (local.get $end) (i32.const 65535)) (i32.const 16))\n      (memory.size {k}))\n  (then\n    (drop\n      (memory.grow {k}\n        (i32.sub\n          (i32.shr_u (i32.add (local.get $end) (i32.const 65535)) (i32.const 16))\n          (memory.size {k}))))))\n{copy}",
+                k = lo,
+                copy = copy,
+            );
+        }
+        return copy;
     }
     let mid = lo + (hi - lo) / 2;
-    let left = build_copy_bst(to_default, pool_param, lo, mid);
-    let right = build_copy_bst(to_default, pool_param, mid, hi);
+    let left = build_copy_bst_with_grow(to_default, pool_param, grow_dst, lo, mid);
+    let right = build_copy_bst_with_grow(to_default, pool_param, grow_dst, mid, hi);
     let mut s = String::new();
     s.push_str(&format!(
         "(if (i32.lt_u (local.get ${param}) (i32.const {mid}))\n",
