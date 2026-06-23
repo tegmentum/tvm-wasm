@@ -63,6 +63,32 @@ fn build_module(initial_pages: u32, max_pages: u32) -> wasmtime::Result<(Engine,
     Ok((engine, module))
 }
 
+/// Builds the module under a wasmtime config that mirrors sqlink's
+/// production setup: 4 GiB memory_reservation + 2 GiB guard +
+/// memory64 enabled. The combination of pre-reserved virtual address
+/// space and explicit max_pages on each pool is what triggers the
+/// trap downstream — make sure auto-grow still works under it.
+fn build_module_sqlink_config(
+    initial_pages: u32,
+    max_pages: u32,
+) -> wasmtime::Result<(Engine, Module)> {
+    let mut config = Config::new();
+    config.wasm_multi_memory(true);
+    config.wasm_memory64(true);
+    config.memory_reservation(4 * 1024 * 1024 * 1024);
+    config.memory_guard_size(2 * 1024 * 1024 * 1024);
+    let engine = Engine::new(&config)?;
+    let p = ModuleParams {
+        n_pools: 4,
+        initial_pages_per_pool: initial_pages,
+        max_pages_per_pool: max_pages,
+        user_body: USER_BODY.to_string(),
+    };
+    let wat = tvm_guest_mm_module_template(&p);
+    let module = Module::new(&engine, &wat)?;
+    Ok((engine, module))
+}
+
 #[test]
 fn generic_copy_from_default_grows_pool_past_initial_pages() -> anyhow::Result<()> {
     // Pool 2 starts at 1 page (64 KiB) and can grow to 16 pages
@@ -137,6 +163,120 @@ fn grow_at_exact_page_boundary() -> anyhow::Result<()> {
 
     let dst_off: i32 = 65536; // exact pool size in bytes
     write.call(&mut store, (dst_off, 16))?;
+    let got = read.call(&mut store, dst_off)?;
+    assert_eq!(got as u32, 0x04030201);
+    Ok(())
+}
+
+#[test]
+fn grow_at_sqlite_lib_journal_boundary() -> anyhow::Result<()> {
+    // Reproduces the exact scenario sqlite-lib hits with two open
+    // VFS files: pool 2 starts at 4096 pages (256 MiB) and the
+    // journal file's slice begins at offset 256 MiB. Writing the
+    // 28-byte journal header at offset 0 of the journal slice is
+    // the first cross-boundary write. With max_pages=8192 the
+    // dispatcher should grow pool 2 by one page and complete the
+    // write.
+    let (engine, module) = build_module(/*initial=*/ 4096, /*max=*/ 8192)?;
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store = Store::new(&engine, ());
+    let instance = linker.instantiate(&mut store, &module)?;
+
+    let write =
+        instance.get_typed_func::<(i32, i32), ()>(&mut store, "write_p2_generic")?;
+    let read = instance.get_typed_func::<i32, i32>(&mut store, "read_p2_u32")?;
+
+    let dst_off: i32 = 256 * 1024 * 1024; // 0x10000000
+    write.call(&mut store, (dst_off, 16))?;
+    let got = read.call(&mut store, dst_off)?;
+    assert_eq!(
+        got as u32, 0x04030201,
+        "first write past the 256 MiB pool boundary must grow + succeed"
+    );
+    Ok(())
+}
+
+#[test]
+fn explicit_memory_grow_on_non_default_pool() -> anyhow::Result<()> {
+    // Sanity: a `memory.grow K` on a non-default pool (K >= 1) under
+    // wasm-multi-memory grows the right pool. Confirms wasmtime
+    // doesn't have a multi-memory-grow bug masquerading as the
+    // failure we see downstream.
+    let mut config = Config::new();
+    config.wasm_multi_memory(true);
+    let engine = Engine::new(&config)?;
+    let wat = r#"
+        (module
+          (memory (export "m0") 1 16)
+          (memory (export "m1") 1 16)
+          (memory (export "m2") 1 16)
+          (func (export "grow_p2") (param i32) (result i32)
+            (memory.grow 2 (local.get 0)))
+          (func (export "size_p2") (result i32)
+            (memory.size 2))
+        )
+    "#;
+    let module = Module::new(&engine, wat)?;
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store = Store::new(&engine, ());
+    let instance = linker.instantiate(&mut store, &module)?;
+
+    let size_p2 = instance.get_typed_func::<(), i32>(&mut store, "size_p2")?;
+    let grow_p2 = instance.get_typed_func::<i32, i32>(&mut store, "grow_p2")?;
+
+    assert_eq!(size_p2.call(&mut store, ())?, 1, "initial pool 2 size");
+    assert_eq!(grow_p2.call(&mut store, 3)?, 1, "grow returns previous size");
+    assert_eq!(size_p2.call(&mut store, ())?, 4, "pool 2 grew to 4 pages");
+    // Try to grow past max (current=4, max=16, asking 13 = fail since 4+13=17>16).
+    assert_eq!(grow_p2.call(&mut store, 13)?, -1, "over-cap grow returns -1");
+    // memory.size unchanged.
+    assert_eq!(size_p2.call(&mut store, ())?, 4);
+    Ok(())
+}
+
+#[test]
+fn grow_at_boundary_under_sqlink_wasmtime_config() -> anyhow::Result<()> {
+    // Same shape as the sqlite-lib journal write but under the
+    // production wasmtime Config (memory_reservation + memory64
+    // enabled). Confirms auto-grow isn't tripped up by the
+    // pre-reserved-VA-space mapping the production engine uses.
+    let (engine, module) = build_module_sqlink_config(4096, 8192)?;
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store = Store::new(&engine, ());
+    let instance = linker.instantiate(&mut store, &module)?;
+
+    let write =
+        instance.get_typed_func::<(i32, i32), ()>(&mut store, "write_p2_generic")?;
+    let read = instance.get_typed_func::<i32, i32>(&mut store, "read_p2_u32")?;
+    let dst_off: i32 = 256 * 1024 * 1024;
+    write.call(&mut store, (dst_off, 4096))?;
+    let got = read.call(&mut store, dst_off)?;
+    assert_eq!(got as u32, 0x04030201);
+    Ok(())
+}
+
+#[test]
+fn grow_at_boundary_with_4kib_chunk_write() -> anyhow::Result<()> {
+    // sqlite-lib's MultiMemoryStorage::write batches in 4 KiB chunks
+    // (CHUNK_SIZE constant). The first cross-boundary write is a
+    // whole-chunk write, not the 28-byte journal header alone — the
+    // header writes via the partial-write path that reads existing
+    // bytes then writes the whole chunk back. Either way the wire-
+    // level memory.copy spans 4 KiB. Test the substrate at that
+    // exact granularity to make sure auto-grow handles it.
+    //
+    // Default memory must hold 4 KiB at the source offset; pool 0
+    // (default) starts at 1 page = 64 KiB.
+    let (engine, module) = build_module(/*initial=*/ 4096, /*max=*/ 8192)?;
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store = Store::new(&engine, ());
+    let instance = linker.instantiate(&mut store, &module)?;
+
+    let write =
+        instance.get_typed_func::<(i32, i32), ()>(&mut store, "write_p2_generic")?;
+    let read = instance.get_typed_func::<i32, i32>(&mut store, "read_p2_u32")?;
+    let dst_off: i32 = 256 * 1024 * 1024; // 0x10000000
+    write.call(&mut store, (dst_off, 4096))?;
     let got = read.call(&mut store, dst_off)?;
     assert_eq!(got as u32, 0x04030201);
     Ok(())
