@@ -284,11 +284,15 @@ v1 limits:
    lane ops, GC, threads, exceptions, …) fall through to a raw-bytes
    passthrough so the linker handles them without an exhaustive
    operator table.
-7. **Custom sections are dropped.** Producer/name sections are
-   discarded by the linker. For symbol-bearing debug info, the
-   consumer should produce a separate `.dwp` and pair it with the
-   linked module — the linked module's function indices will not
-   match the cdylib's function indices.
+7. **Custom sections are preserved.** Custom sections from both
+   inputs (e.g. `name`, `producers`, wit-bindgen's
+   `component-type:*`) are passed through to the merged module in
+   their source position relative to the structural sections. This
+   is what lets `wasm-tools component new` infer interface bindings
+   from a linked artifact. Note that the linked module's function
+   indices will not match the pre-link cdylib's, so a `name` section
+   from the cdylib points at the renumbered functions — pair separate
+   `.dwp` debug info with the linked module, not the cdylib.
 
 ## Worked example: the rust-cdylib-consumer
 

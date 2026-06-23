@@ -345,6 +345,31 @@ pub fn link_with_options(
 
     let mut module = wasm_encoder::Module::new();
 
+    // Emits all custom sections from `shell` then `user` whose
+    // captured marker matches `marker` (or whose marker is `None`
+    // when `marker` is `None`). Customs are written verbatim — name
+    // + raw bytes — so positional sections like `name` (which is
+    // valid after Code) and component-type sections (typically at the
+    // end of the module) land where they belong.
+    let emit_customs = |module: &mut wasm_encoder::Module,
+                        marker: Option<SectionMarker>| {
+        for cs in shell
+            .custom_sections
+            .iter()
+            .chain(user.custom_sections.iter())
+        {
+            if cs.after == marker {
+                module.section(&wasm_encoder::CustomSection {
+                    name: std::borrow::Cow::Borrowed(cs.name),
+                    data: std::borrow::Cow::Borrowed(cs.data),
+                });
+            }
+        }
+    };
+
+    // Customs that appeared before any real section in either input.
+    emit_customs(&mut module, None);
+
     // Types: shell + user (user types renumbered).
     {
         let mut types = wasm_encoder::TypeSection::new();
@@ -356,6 +381,7 @@ pub fn link_with_options(
         }
         module.section(&types);
     }
+    emit_customs(&mut module, Some(SectionMarker::Type));
 
     // Imports: forwarded user imports. The shell currently has none;
     // when it does, shell imports would precede these.
@@ -380,6 +406,7 @@ pub fn link_with_options(
         }
         module.section(&imports);
     }
+    emit_customs(&mut module, Some(SectionMarker::Import));
 
     // Functions: shell + user (user funcs' type indices remapped).
     {
@@ -392,6 +419,7 @@ pub fn link_with_options(
         }
         module.section(&funcs);
     }
+    emit_customs(&mut module, Some(SectionMarker::Function));
 
     // Tables: shell + user.
     {
@@ -404,6 +432,7 @@ pub fn link_with_options(
         }
         module.section(&tables);
     }
+    emit_customs(&mut module, Some(SectionMarker::Table));
 
     // Memories: shell only — but bump pool 0's initial pages to at
     // least match the user's default memory. Rustc cdylibs request 16
@@ -430,6 +459,7 @@ pub fn link_with_options(
         }
         module.section(&mems);
     }
+    emit_customs(&mut module, Some(SectionMarker::Memory));
 
     // Globals: shell + user. Shell globals get shifted by forwarded
     // counts (their initializers may reference other globals or funcs).
@@ -444,6 +474,7 @@ pub fn link_with_options(
         }
         module.section(&globals);
     }
+    emit_customs(&mut module, Some(SectionMarker::Global));
 
     // Exports: shell + filtered user exports. Drop user's `memory`
     // export (the shell already exports `mem0..memN` — pool 0 is the
@@ -530,6 +561,7 @@ pub fn link_with_options(
         }
         module.section(&exports);
     }
+    emit_customs(&mut module, Some(SectionMarker::Export));
 
     // Start: shell's start, if any. User start was rejected upstream.
     if let Some(start) = shell.start {
@@ -537,6 +569,7 @@ pub fn link_with_options(
             function_index: map_shell_func(start),
         });
     }
+    emit_customs(&mut module, Some(SectionMarker::Start));
 
     // Element segments: shell + user. Both sides' func entries get
     // shifted into the merged func-index space.
@@ -550,6 +583,7 @@ pub fn link_with_options(
         }
         module.section(&elems);
     }
+    emit_customs(&mut module, Some(SectionMarker::Element));
 
     // DataCount section: required when bulk-memory data.drop or
     // memory.init instructions exist. Both the shell (memory.fill,
@@ -562,6 +596,7 @@ pub fn link_with_options(
             count: total_data_segments,
         });
     }
+    emit_customs(&mut module, Some(SectionMarker::DataCount));
 
     // Code section:
     //   - If no forwarded imports shift the shell's func-index space,
@@ -605,6 +640,7 @@ pub fn link_with_options(
         }
         module.section(&codes);
     }
+    emit_customs(&mut module, Some(SectionMarker::Code));
 
     // Data: shell + user (memory index remapped to shell's 0).
     {
@@ -617,6 +653,7 @@ pub fn link_with_options(
         }
         module.section(&datas);
     }
+    emit_customs(&mut module, Some(SectionMarker::Data));
 
     Ok(module.finish())
 }
@@ -666,6 +703,41 @@ struct ParsedModule<'a> {
     code_readers: Vec<FunctionBody<'a>>,
     data: Vec<DataSegment<'a>>,
     data_count: u32,
+    /// Custom sections in source order, each tagged with the most
+    /// recent non-custom section that preceded it. Drives ordered
+    /// re-emission so positional sections (e.g. `name` after Code) end
+    /// up in the right place in the merged module.
+    custom_sections: Vec<CustomSectionEntry<'a>>,
+}
+
+/// One captured custom section plus the section ID of the section it
+/// followed in the input. `None` means the custom section appeared
+/// before the first non-custom section.
+struct CustomSectionEntry<'a> {
+    after: Option<SectionMarker>,
+    name: &'a str,
+    data: &'a [u8],
+}
+
+/// Coarse-grained marker for "after which section did this custom
+/// section appear". Mirrors the canonical wasm section sequence; we
+/// don't need the full SectionId set because we never emit a custom
+/// section in a position that wouldn't naturally exist in the merged
+/// module.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SectionMarker {
+    Type,
+    Import,
+    Function,
+    Table,
+    Memory,
+    Global,
+    Export,
+    Start,
+    Element,
+    DataCount,
+    Code,
+    Data,
 }
 
 #[derive(Clone)]
@@ -780,12 +852,15 @@ fn parse_module(bytes: &[u8]) -> Result<ParsedModule<'_>> {
     let mut code_readers: Vec<FunctionBody<'_>> = Vec::new();
     let mut data: Vec<DataSegment<'_>> = Vec::new();
     let mut data_count: u32 = 0;
+    let mut custom_sections: Vec<CustomSectionEntry<'_>> = Vec::new();
+    let mut last_marker: Option<SectionMarker> = None;
 
     let parser = Parser::new(0);
     for payload in parser.parse_all(bytes) {
         let payload = payload?;
         match payload {
             Payload::TypeSection(reader) => {
+                last_marker = Some(SectionMarker::Type);
                 for rec_group in reader {
                     let rec_group = rec_group?;
                     for ty in rec_group.into_types() {
@@ -807,6 +882,7 @@ fn parse_module(bytes: &[u8]) -> Result<ParsedModule<'_>> {
                 }
             }
             Payload::ImportSection(reader) => {
+                last_marker = Some(SectionMarker::Import);
                 for group in reader {
                     let group = group?;
                     match group {
@@ -837,11 +913,13 @@ fn parse_module(bytes: &[u8]) -> Result<ParsedModule<'_>> {
                 }
             }
             Payload::FunctionSection(reader) => {
+                last_marker = Some(SectionMarker::Function);
                 for ty_idx in reader {
                     func_types.push(ty_idx?);
                 }
             }
             Payload::TableSection(reader) => {
+                last_marker = Some(SectionMarker::Table);
                 for t in reader {
                     let t = t?;
                     let element_type = ref_type_to_encoder(t.ty.element_type)?;
@@ -860,6 +938,7 @@ fn parse_module(bytes: &[u8]) -> Result<ParsedModule<'_>> {
                 }
             }
             Payload::MemorySection(reader) => {
+                last_marker = Some(SectionMarker::Memory);
                 for m in reader {
                     let m = m?;
                     memories.push(MemoryEntry {
@@ -872,6 +951,7 @@ fn parse_module(bytes: &[u8]) -> Result<ParsedModule<'_>> {
                 }
             }
             Payload::GlobalSection(reader) => {
+                last_marker = Some(SectionMarker::Global);
                 for g in reader {
                     let g = g?;
                     let val_type = val_type_to_encoder(g.ty.content_type)?;
@@ -886,6 +966,7 @@ fn parse_module(bytes: &[u8]) -> Result<ParsedModule<'_>> {
                 }
             }
             Payload::ExportSection(reader) => {
+                last_marker = Some(SectionMarker::Export);
                 for e in reader {
                     let e = e?;
                     exports.push(ExportEntry {
@@ -896,9 +977,11 @@ fn parse_module(bytes: &[u8]) -> Result<ParsedModule<'_>> {
                 }
             }
             Payload::StartSection { func, .. } => {
+                last_marker = Some(SectionMarker::Start);
                 start = Some(func);
             }
             Payload::ElementSection(reader) => {
+                last_marker = Some(SectionMarker::Element);
                 for el in reader {
                     let el = el?;
                     let kind = match el.kind {
@@ -942,6 +1025,7 @@ fn parse_module(bytes: &[u8]) -> Result<ParsedModule<'_>> {
                 code_readers.push(body);
             }
             Payload::DataSection(reader) => {
+                last_marker = Some(SectionMarker::Data);
                 for d in reader {
                     let d = d?;
                     let kind = match d.kind {
@@ -958,17 +1042,29 @@ fn parse_module(bytes: &[u8]) -> Result<ParsedModule<'_>> {
                 }
             }
             Payload::DataCountSection { count, .. } => {
+                last_marker = Some(SectionMarker::DataCount);
                 data_count = count;
             }
-            // Custom sections: discard. The merged module doesn't need
-            // the input modules' `name`, `producers`, etc. — we could
-            // forward them later if useful.
-            Payload::CustomSection(_) => {}
+            // Custom sections: capture with the marker of the most
+            // recently seen non-custom section so we can re-emit them
+            // in the matching position in the merged module.
+            Payload::CustomSection(reader) => {
+                custom_sections.push(CustomSectionEntry {
+                    after: last_marker,
+                    name: reader.name(),
+                    data: reader.data(),
+                });
+            }
+            // CodeSectionStart marks the start of the code section
+            // (before individual bodies are streamed). Treat it as the
+            // marker bump so any custom section between Code and Data
+            // ends up tagged as "after Code".
+            Payload::CodeSectionStart { .. } => {
+                last_marker = Some(SectionMarker::Code);
+            }
             // Component-model + GC-related sections — neither input is
             // expected to contain these. If they do, bail.
-            Payload::CodeSectionStart { .. }
-            | Payload::Version { .. }
-            | Payload::End(_) => {}
+            Payload::Version { .. } | Payload::End(_) => {}
             other => {
                 bail!("unexpected section in input wasm: {:?}", other);
             }
@@ -991,6 +1087,7 @@ fn parse_module(bytes: &[u8]) -> Result<ParsedModule<'_>> {
         code_readers,
         data,
         data_count,
+        custom_sections,
     })
 }
 
