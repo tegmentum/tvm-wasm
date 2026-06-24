@@ -34,6 +34,8 @@ cargo test --workspace
 | `tvm-core` | Region directory, allocators, residency tiering, handles, metrics — shared by both deployment models |
 | `tvm-wasmtime` | **Host-side TVM** for server runtimes: WIT host impl, raw fast-path linker, imported-memory regions, multi-store sharing |
 | `tvm-guest-mm` | **Guest-side TVM**: self-contained wasm modules with N internal memory pools, no host imports needed |
+| `tvm-guest-mm-rt` | Guest-side safe Rust API over the multi-memory shell (for cdylib consumers of `tvm-guest-mm`) — see [`crates/tvm-guest-mm/docs/rust-cdylib.md`](crates/tvm-guest-mm/docs/rust-cdylib.md) |
+| `tvm-guest-mm-link` | Static linker that composes a rustc-emitted cdylib with a `tvm-guest-mm` shell into a single self-contained `.wasm` |
 | `tvm-guest-rt` | Guest-side safe Rust API over the raw fast path (for use with `tvm-wasmtime` host) |
 | `tvm-test-harness` | Reusable benchmarking primitives |
 | `tvm-tests` | Integration tests for `tvm-core` |
@@ -45,8 +47,10 @@ abstraction, multi-pool >4 GiB scaling, lifecycle); they differ on
 whether spill-to-disk and host-side observability are available (only
 the host-side variant offers them).
 
-Plus example guests under `examples/guest-demo/` (WIT path) and
-`examples/guest-fast-path/` (raw path).
+Plus example guests under `examples/guest-demo/` (WIT path),
+`examples/guest-fast-path/` (raw path), and
+`examples/rust-cdylib-consumer/` (pure Rust source over `tvm-guest-mm-rt`,
+linked into a self-contained multi-memory `.wasm` via `tvm-mm-link`).
 
 ## Two ways to call into TVM from a guest
 

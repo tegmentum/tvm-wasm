@@ -1,0 +1,17 @@
+[package]
+name = "tvm-rust-cdylib-consumer-with-imports"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Companion to `rust-cdylib-consumer` that also imports two non-`tvm_mm` functions (a host log + a host clock). Exercises `tvm-guest-mm-link`'s import-forwarding path: imports survive the link step and are satisfied at instantiation by the embedder."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+tvm-guest-mm-rt = { path = "../../crates/tvm-guest-mm-rt" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

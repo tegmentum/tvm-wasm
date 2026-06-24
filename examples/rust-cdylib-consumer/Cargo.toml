@@ -1,0 +1,19 @@
+[package]
+name = "tvm-rust-cdylib-consumer"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Representative consumer of the rust-cdylib substrate path. Mimics a pcache-shape workload: multiple memory pools, byte-level page R/W, copy-to-default for record materialization."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+tvm-guest-mm-rt = { path = "../../crates/tvm-guest-mm-rt" }
+
+[profile.release]
+# Small + LTO for a tight artifact; rustc's no_std cdylib produces a
+# few hundred bytes per export here.
+opt-level = "s"
+lto = true
+strip = true

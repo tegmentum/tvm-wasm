@@ -31,6 +31,10 @@ wasmtime = { workspace = true }
 anyhow = { workspace = true }
 tvm-test-harness = { path = "../tvm-test-harness" }
 tvm-wasmtime = { path = "../tvm-wasmtime" }
+# Used by the rust-cdylib end-to-end test (`tests/rust_cdylib_e2e.rs`).
+# Pulls in wasmparser/wasm-encoder transitively for validation.
+tvm-guest-mm-link = { path = "../tvm-guest-mm-link" }
+wasmparser = "0.248"
 
 [[bin]]
 name = "gen_guest_wasm"

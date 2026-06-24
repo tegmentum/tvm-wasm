@@ -1,0 +1,27 @@
+[package]
+name = "tvm-rust-cdylib-consumer-indirect"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Consumer that exercises indirect calls via a static function-pointer table AND a forwarded host import alongside a tvm_mm import. Proves the linker's element-segment renumbering for `call_indirect` targets — the wit-bindgen-shaped path that previously trapped at instantiation."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+tvm-guest-mm-rt = { path = "../../crates/tvm-guest-mm-rt" }
+
+[profile.release]
+# Keep opt-level small + LTO so rustc emits the indirect-call shape
+# (a static table of function pointers ends up in an element segment).
+# `strip = false` so we can inspect the wasm with wasm-tools if needed.
+opt-level = "s"
+lto = true
+strip = false
+
+# Force reference-types ON so LLVM emits the element segment in the
+# "expression" form (each item is a `(ref.func N)` const-expr), which
+# is the shape wit-bindgen also produces. Without this, LLVM emits the
+# compact `Functions(...)` form by default — both shapes need the
+# linker's renumbering, but only the expression form is the regression
+# that motivated this example.

@@ -1,0 +1,22 @@
+[package]
+name = "tvm-guest-mm-link"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Static linker that composes a rustc-emitted cdylib core wasm with the multi-memory shell from `tvm-guest-mm` into a single self-contained core wasm. The user crate imports the dispatch helpers from the `tvm_mm` namespace; the linker rewires those calls to the shell's internal helper functions and merges everything into one module."
+
+[dependencies]
+anyhow = { workspace = true }
+wasmparser = "0.248"
+wasm-encoder = "0.248"
+wat = { workspace = true }
+tvm-guest-mm = { path = "../tvm-guest-mm", features = ["std"] }
+
+[dev-dependencies]
+wasmtime = { workspace = true }
+wat = { workspace = true }
+
+[[bin]]
+name = "tvm-mm-link"
+path = "src/bin/tvm_mm_link.rs"
