@@ -113,12 +113,9 @@ fn dispatch_routes_through_renumbered_element_segment() -> anyhow::Result<()> {
     let options = tvm_guest_mm_link::LinkOptions {
         aliases: vec![("memory".to_string(), 0)],
     };
-    let linked_bytes = tvm_guest_mm_link::link_with_params_and_options(
-        &params,
-        &user_bytes,
-        &options,
-    )
-    .context("linking consumer-indirect + shell")?;
+    let linked_bytes =
+        tvm_guest_mm_link::link_with_params_and_options(&params, &user_bytes, &options)
+            .context("linking consumer-indirect + shell")?;
 
     wasmparser::Validator::new_with_features(
         wasmparser::WasmFeatures::default() | wasmparser::WasmFeatures::MULTI_MEMORY,

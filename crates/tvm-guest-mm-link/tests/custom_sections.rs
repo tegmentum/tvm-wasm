@@ -178,11 +178,8 @@ fn user_custom_section_survives_link() -> Result<()> {
     // emits these.
     let payload: &[u8] = b"\x00\x01\x02\x03 component-type binary blob";
     let shell = build_shell_with_customs(&[]);
-    let user = build_user_with_customs(&[(
-        SectionPosition::AfterCode,
-        "component-type:foo",
-        payload,
-    )]);
+    let user =
+        build_user_with_customs(&[(SectionPosition::AfterCode, "component-type:foo", payload)]);
     let merged = link(&shell, &user)?;
 
     wasmparser::Validator::new_with_features(
@@ -206,11 +203,7 @@ fn shell_custom_section_survives_link() -> Result<()> {
     // Shells today emit no customs but the linker should pass any
     // through anyway. Synthesize a shell with a `producers` section.
     let payload: &[u8] = b"\x01\x02 producers";
-    let shell = build_shell_with_customs(&[(
-        SectionPosition::AfterCode,
-        "producers",
-        payload,
-    )]);
+    let shell = build_shell_with_customs(&[(SectionPosition::AfterCode, "producers", payload)]);
     let user = build_user_with_customs(&[]);
     let merged = link(&shell, &user)?;
     let customs = customs_of(&merged)?;
@@ -236,11 +229,7 @@ fn name_section_lands_after_code() -> Result<()> {
     let mut names = wasm_encoder::NameSection::new();
     names.module("hello");
     let payload = names.as_custom().data.into_owned();
-    let user = build_user_with_customs(&[(
-        SectionPosition::AfterCode,
-        "name",
-        &payload,
-    )]);
+    let user = build_user_with_customs(&[(SectionPosition::AfterCode, "name", &payload)]);
     let shell = build_shell_with_customs(&[]);
     let merged = link(&shell, &user)?;
 
@@ -321,9 +310,8 @@ fn function_names_of(bytes: &[u8]) -> Result<Vec<(u32, String)>> {
             if cs.name() != "name" {
                 continue;
             }
-            let reader = wasmparser::NameSectionReader::new(
-                wasmparser::BinaryReader::new(cs.data(), 0),
-            );
+            let reader =
+                wasmparser::NameSectionReader::new(wasmparser::BinaryReader::new(cs.data(), 0));
             for sub in reader {
                 if let wasmparser::Name::Function(map) = sub? {
                     for n in map {
@@ -358,11 +346,7 @@ fn merged_module_has_at_most_one_name_section() -> Result<()> {
     // the user-side `name` already covers the "no duplicate" guarantee
     // for the typical configuration.
     let shell = build_shell_with_customs(&[]);
-    let user = build_user_with_customs(&[(
-        SectionPosition::AfterCode,
-        "name",
-        &user_payload,
-    )]);
+    let user = build_user_with_customs(&[(SectionPosition::AfterCode, "name", &user_payload)]);
     let merged = link(&shell, &user)?;
 
     let mut name_sections = 0;
@@ -406,11 +390,7 @@ fn user_name_section_function_indices_get_remapped() -> Result<()> {
     names.functions(&funcs);
     let payload = names.as_custom().data.into_owned();
 
-    let user = build_user_with_customs(&[(
-        SectionPosition::AfterCode,
-        "name",
-        &payload,
-    )]);
+    let user = build_user_with_customs(&[(SectionPosition::AfterCode, "name", &payload)]);
     let shell = build_shell_with_customs(&[]);
     let merged = link(&shell, &user)?;
 
@@ -423,10 +403,7 @@ fn user_name_section_function_indices_get_remapped() -> Result<()> {
     // Find the `go_user` entry — it should live at index 1, not at
     // index 1 in the user's pre-link space (which would alias the
     // shell's `tvm_load_u8`).
-    let go_user_idx = names
-        .iter()
-        .find(|(_, n)| n == "go_user")
-        .map(|(i, _)| *i);
+    let go_user_idx = names.iter().find(|(_, n)| n == "go_user").map(|(i, _)| *i);
     assert_eq!(
         go_user_idx,
         Some(1),
@@ -480,11 +457,7 @@ fn user_name_section_with_forwarded_imports_remaps_correctly() -> Result<()> {
         "tvm_load_u8",
         wasm_encoder::EntityType::Function(0),
     );
-    imports.import(
-        "env",
-        "host_print",
-        wasm_encoder::EntityType::Function(1),
-    );
+    imports.import("env", "host_print", wasm_encoder::EntityType::Function(1));
     module.section(&imports);
 
     // One user-defined fn of type 1.
@@ -529,14 +502,38 @@ fn user_name_section_with_forwarded_imports_remaps_correctly() -> Result<()> {
     //   1: shell's tvm_load_u8 (defined)
     //   2: user `start` (user defined, shifted by fwd+shell)
     let names = function_names_of(&merged)?;
-    let start_idx = names.iter().find(|(_, n)| n == "start_user").map(|(i, _)| *i);
-    let host_print_idx = names.iter().find(|(_, n)| n == "host_print_import").map(|(i, _)| *i);
-    let loader_idx = names.iter().find(|(_, n)| n == "loader_import").map(|(i, _)| *i);
-    assert_eq!(start_idx, Some(2), "`start_user` should be at merged idx 2; names={:?}", names);
-    assert_eq!(host_print_idx, Some(0), "`host_print_import` should be at merged idx 0; names={:?}", names);
+    let start_idx = names
+        .iter()
+        .find(|(_, n)| n == "start_user")
+        .map(|(i, _)| *i);
+    let host_print_idx = names
+        .iter()
+        .find(|(_, n)| n == "host_print_import")
+        .map(|(i, _)| *i);
+    let loader_idx = names
+        .iter()
+        .find(|(_, n)| n == "loader_import")
+        .map(|(i, _)| *i);
+    assert_eq!(
+        start_idx,
+        Some(2),
+        "`start_user` should be at merged idx 2; names={:?}",
+        names
+    );
+    assert_eq!(
+        host_print_idx,
+        Some(0),
+        "`host_print_import` should be at merged idx 0; names={:?}",
+        names
+    );
     // The rewired tvm_mm import now lives at the shell function's
     // merged index, which is 1 (post fwd shift).
-    assert_eq!(loader_idx, Some(1), "`loader_import` (rewired to shell's tvm_load_u8) should be at merged idx 1; names={:?}", names);
+    assert_eq!(
+        loader_idx,
+        Some(1),
+        "`loader_import` (rewired to shell's tvm_load_u8) should be at merged idx 1; names={:?}",
+        names
+    );
 
     // Cross-check against the export table.
     let mut exported_start_idx: Option<u32> = None;

@@ -111,11 +111,7 @@ pub(crate) fn emit_bulk_copy_dispatcher(n_pools: u32) -> String {
         n = n_pools,
     ));
     let body = build_copy_bst_with_grow(
-        /*to_default=*/ true,
-        "src_pool",
-        /*grow_dst=*/ false,
-        0,
-        n_pools,
+        /*to_default=*/ true, "src_pool", /*grow_dst=*/ false, 0, n_pools,
     );
     indent_into(&mut s, &body, 4);
     s.push_str("  )\n");
@@ -150,11 +146,7 @@ pub(crate) fn emit_bulk_copy_from_default_dispatcher(n_pools: u32) -> String {
              (if (i32.lt_u (local.get $end) (local.get $dst_off)) (then unreachable))\n",
     );
     let body = build_copy_bst_with_grow(
-        /*to_default=*/ false,
-        "dst_pool",
-        /*grow_dst=*/ true,
-        0,
-        n_pools,
+        /*to_default=*/ false, "dst_pool", /*grow_dst=*/ true, 0, n_pools,
     );
     indent_into(&mut s, &body, 4);
     s.push_str("  )\n");
@@ -937,7 +929,10 @@ fn build_copy_bst_with_grow(
     hi: u32,
 ) -> String {
     debug_assert!(lo < hi);
-    debug_assert!(!grow_dst || !to_default, "grow_dst only makes sense for default→pool");
+    debug_assert!(
+        !grow_dst || !to_default,
+        "grow_dst only makes sense for default→pool"
+    );
     if hi - lo == 1 {
         let (dst_mem, src_mem) = if to_default { (0, lo) } else { (lo, 0) };
         // For pool→default, params are (src_pool, src_off, dst_off, len).

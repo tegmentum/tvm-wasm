@@ -9,7 +9,9 @@
 use std::process::ExitCode;
 
 use anyhow::Context;
-use tvm_guest_mm_link::{link_with_params_and_options, LinkOptions, ModuleParams, DEFAULT_POOL_COUNT};
+use tvm_guest_mm_link::{
+    link_with_params_and_options, LinkOptions, ModuleParams, DEFAULT_POOL_COUNT,
+};
 
 fn main() -> ExitCode {
     match run() {
@@ -110,8 +112,8 @@ fn run() -> anyhow::Result<()> {
     let user_path = user.context("--user is required")?;
     let out_path = out.context("-o/--output is required")?;
 
-    let user_bytes = std::fs::read(&user_path)
-        .with_context(|| format!("reading user wasm at {user_path}"))?;
+    let user_bytes =
+        std::fs::read(&user_path).with_context(|| format!("reading user wasm at {user_path}"))?;
 
     let params = ModuleParams {
         n_pools: pools,
@@ -121,8 +123,8 @@ fn run() -> anyhow::Result<()> {
     };
 
     let options = LinkOptions { aliases };
-    let bytes = link_with_params_and_options(&params, &user_bytes, &options)
-        .context("linking modules")?;
+    let bytes =
+        link_with_params_and_options(&params, &user_bytes, &options).context("linking modules")?;
 
     std::fs::write(&out_path, &bytes)
         .with_context(|| format!("writing merged wasm to {out_path}"))?;

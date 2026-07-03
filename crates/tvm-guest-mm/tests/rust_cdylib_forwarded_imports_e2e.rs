@@ -89,9 +89,7 @@ fn forwarded_imports_round_trip() -> anyhow::Result<()> {
     // Sanity: the pre-link cdylib must contain both flavors of import.
     let pre_link_imports = collect_imports(&user_bytes)?;
     assert!(
-        pre_link_imports
-            .iter()
-            .any(|(m, _)| m == "tvm_mm"),
+        pre_link_imports.iter().any(|(m, _)| m == "tvm_mm"),
         "pre-link cdylib should import from tvm_mm; got {:?}",
         pre_link_imports
     );
@@ -160,7 +158,11 @@ fn forwarded_imports_round_trip() -> anyhow::Result<()> {
             let mut buf = vec![0u8; len as usize];
             mem.read(&mut caller, ptr as usize, &mut buf)
                 .expect("reading mem0 in host.log");
-            host_state_log.lock().unwrap().log_calls.push((ptr, len, buf));
+            host_state_log
+                .lock()
+                .unwrap()
+                .log_calls
+                .push((ptr, len, buf));
         },
     )?;
     let host_state_now = Arc::clone(&host_state);
@@ -218,7 +220,10 @@ fn forwarded_imports_round_trip() -> anyhow::Result<()> {
             b"stamped",
             "second log call must be `stamped`"
         );
-        assert_eq!(s.now_calls, 1, "now_nanos must have been called exactly once");
+        assert_eq!(
+            s.now_calls, 1,
+            "now_nanos must have been called exactly once"
+        );
     }
 
     Ok(())

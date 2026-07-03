@@ -191,7 +191,11 @@ fn user_with_element_segment(element_shape: ElementShape) -> Vec<u8> {
     match element_shape {
         ElementShape::Functions => {
             let entries: [u32; 1] = [2];
-            elems.active(Some(0), &offset, Elements::Functions(Cow::Borrowed(&entries)));
+            elems.active(
+                Some(0),
+                &offset,
+                Elements::Functions(Cow::Borrowed(&entries)),
+            );
         }
         ElementShape::Expressions => {
             let exprs = [ConstExpr::ref_func(2)];
@@ -474,10 +478,10 @@ fn user_with_element_segment_default_table() -> Vec<u8> {
     // renumbered user table where slot 4 is in bounds.
     let offset = ConstExpr::i32_const(4);
     let entries: [u32; 1] = [1]; // target = user idx 1
-    // Active element segment with TABLE INDEX = None (i.e. default —
-    // table 0 in user-space). This is the shape rustc emits for the
-    // implicit `__indirect_function_table` and is the path that needs
-    // explicit-materialization of the renumbered table index.
+                                 // Active element segment with TABLE INDEX = None (i.e. default —
+                                 // table 0 in user-space). This is the shape rustc emits for the
+                                 // implicit `__indirect_function_table` and is the path that needs
+                                 // explicit-materialization of the renumbered table index.
     elems.active(None, &offset, Elements::Functions(Cow::Borrowed(&entries)));
     m.section(&elems);
 

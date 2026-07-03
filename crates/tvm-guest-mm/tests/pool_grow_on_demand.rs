@@ -103,8 +103,7 @@ fn generic_copy_from_default_grows_pool_past_initial_pages() -> anyhow::Result<(
     let mut store = Store::new(&engine, ());
     let instance = linker.instantiate(&mut store, &module)?;
 
-    let write =
-        instance.get_typed_func::<(i32, i32), ()>(&mut store, "write_p2_generic")?;
+    let write = instance.get_typed_func::<(i32, i32), ()>(&mut store, "write_p2_generic")?;
     let read = instance.get_typed_func::<i32, i32>(&mut store, "read_p2_u32")?;
 
     let dst_off: i32 = 128 * 1024; // 2 × initial pool size
@@ -131,8 +130,7 @@ fn specialized_copy_from_default_grows_pool_past_initial_pages() -> anyhow::Resu
     let mut store = Store::new(&engine, ());
     let instance = linker.instantiate(&mut store, &module)?;
 
-    let write = instance
-        .get_typed_func::<(i32, i32), ()>(&mut store, "write_p2_specialized")?;
+    let write = instance.get_typed_func::<(i32, i32), ()>(&mut store, "write_p2_specialized")?;
     let read = instance.get_typed_func::<i32, i32>(&mut store, "read_p2_u32")?;
 
     let dst_off: i32 = 256 * 1024; // 4 × initial pool size
@@ -157,8 +155,7 @@ fn grow_at_exact_page_boundary() -> anyhow::Result<()> {
     let mut store = Store::new(&engine, ());
     let instance = linker.instantiate(&mut store, &module)?;
 
-    let write =
-        instance.get_typed_func::<(i32, i32), ()>(&mut store, "write_p2_generic")?;
+    let write = instance.get_typed_func::<(i32, i32), ()>(&mut store, "write_p2_generic")?;
     let read = instance.get_typed_func::<i32, i32>(&mut store, "read_p2_u32")?;
 
     let dst_off: i32 = 65536; // exact pool size in bytes
@@ -182,8 +179,7 @@ fn grow_at_sqlite_lib_journal_boundary() -> anyhow::Result<()> {
     let mut store = Store::new(&engine, ());
     let instance = linker.instantiate(&mut store, &module)?;
 
-    let write =
-        instance.get_typed_func::<(i32, i32), ()>(&mut store, "write_p2_generic")?;
+    let write = instance.get_typed_func::<(i32, i32), ()>(&mut store, "write_p2_generic")?;
     let read = instance.get_typed_func::<i32, i32>(&mut store, "read_p2_u32")?;
 
     let dst_off: i32 = 256 * 1024 * 1024; // 0x10000000
@@ -225,10 +221,18 @@ fn explicit_memory_grow_on_non_default_pool() -> anyhow::Result<()> {
     let grow_p2 = instance.get_typed_func::<i32, i32>(&mut store, "grow_p2")?;
 
     assert_eq!(size_p2.call(&mut store, ())?, 1, "initial pool 2 size");
-    assert_eq!(grow_p2.call(&mut store, 3)?, 1, "grow returns previous size");
+    assert_eq!(
+        grow_p2.call(&mut store, 3)?,
+        1,
+        "grow returns previous size"
+    );
     assert_eq!(size_p2.call(&mut store, ())?, 4, "pool 2 grew to 4 pages");
     // Try to grow past max (current=4, max=16, asking 13 = fail since 4+13=17>16).
-    assert_eq!(grow_p2.call(&mut store, 13)?, -1, "over-cap grow returns -1");
+    assert_eq!(
+        grow_p2.call(&mut store, 13)?,
+        -1,
+        "over-cap grow returns -1"
+    );
     // memory.size unchanged.
     assert_eq!(size_p2.call(&mut store, ())?, 4);
     Ok(())
@@ -245,8 +249,7 @@ fn grow_at_boundary_under_sqlink_wasmtime_config() -> anyhow::Result<()> {
     let mut store = Store::new(&engine, ());
     let instance = linker.instantiate(&mut store, &module)?;
 
-    let write =
-        instance.get_typed_func::<(i32, i32), ()>(&mut store, "write_p2_generic")?;
+    let write = instance.get_typed_func::<(i32, i32), ()>(&mut store, "write_p2_generic")?;
     let read = instance.get_typed_func::<i32, i32>(&mut store, "read_p2_u32")?;
     let dst_off: i32 = 256 * 1024 * 1024;
     write.call(&mut store, (dst_off, 4096))?;
@@ -272,8 +275,7 @@ fn grow_at_boundary_with_4kib_chunk_write() -> anyhow::Result<()> {
     let mut store = Store::new(&engine, ());
     let instance = linker.instantiate(&mut store, &module)?;
 
-    let write =
-        instance.get_typed_func::<(i32, i32), ()>(&mut store, "write_p2_generic")?;
+    let write = instance.get_typed_func::<(i32, i32), ()>(&mut store, "write_p2_generic")?;
     let read = instance.get_typed_func::<i32, i32>(&mut store, "read_p2_u32")?;
     let dst_off: i32 = 256 * 1024 * 1024; // 0x10000000
     write.call(&mut store, (dst_off, 4096))?;
@@ -292,8 +294,7 @@ fn grow_to_max_pages_then_overflow_traps() -> anyhow::Result<()> {
     let linker: Linker<()> = Linker::new(&engine);
     let mut store = Store::new(&engine, ());
     let instance = linker.instantiate(&mut store, &module)?;
-    let write =
-        instance.get_typed_func::<(i32, i32), ()>(&mut store, "write_p2_generic")?;
+    let write = instance.get_typed_func::<(i32, i32), ()>(&mut store, "write_p2_generic")?;
 
     // Offset that requires more pages than max allows.
     let result = write.call(&mut store, (3 * 65536, 16));

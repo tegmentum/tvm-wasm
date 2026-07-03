@@ -38,9 +38,7 @@ fn has_wasm_target() -> bool {
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .map(|o| {
-            String::from_utf8_lossy(&o.stdout).contains("wasm32-unknown-unknown")
-        })
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("wasm32-unknown-unknown"))
         .unwrap_or(false)
 }
 
@@ -133,8 +131,7 @@ fn rust_cdylib_consumer_round_trips_pages() -> anyhow::Result<()> {
     // ----- 3. u32-shaped header field round-trip -----
     let write_hot_u32 =
         instance.get_typed_func::<(u32, u32, u32), ()>(&mut store, "write_hot_u32")?;
-    let read_hot_u32 =
-        instance.get_typed_func::<(u32, u32), u32>(&mut store, "read_hot_u32")?;
+    let read_hot_u32 = instance.get_typed_func::<(u32, u32), u32>(&mut store, "read_hot_u32")?;
     write_hot_u32.call(&mut store, (1, 0, 0xdead_beef))?;
     write_hot_u32.call(&mut store, (2, 0, 0xc0fe_babe))?;
     assert_eq!(read_hot_u32.call(&mut store, (1, 0))?, 0xdead_beef);
@@ -195,8 +192,7 @@ fn rust_cdylib_consumer_round_trips_pages() -> anyhow::Result<()> {
     // 0xfc] = 0xfcfdfeff (LE). Page 0 was overwritten with the (i &
     // 0xff) pattern when we wrote it for the materialize test above:
     // first u32 is [0,1,2,3] LE = 0x03020100.
-    let sum =
-        instance.get_typed_func::<(u32, u32), u32>(&mut store, "sum_hot_page_headers")?;
+    let sum = instance.get_typed_func::<(u32, u32), u32>(&mut store, "sum_hot_page_headers")?;
     let result = sum.call(&mut store, (0, 4))?;
     let expected = 0x0302_0100u32
         .wrapping_add(0xdead_beefu32)

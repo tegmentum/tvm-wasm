@@ -75,8 +75,12 @@ fn alias_memory0_adds_export_named_memory() -> Result<()> {
         mem_exports
     );
     // Originals must still be present.
-    assert!(mem_exports.iter().any(|(n, _, idx)| n == "mem0" && *idx == 0));
-    assert!(mem_exports.iter().any(|(n, _, idx)| n == "mem1" && *idx == 1));
+    assert!(mem_exports
+        .iter()
+        .any(|(n, _, idx)| n == "mem0" && *idx == 0));
+    assert!(mem_exports
+        .iter()
+        .any(|(n, _, idx)| n == "mem1" && *idx == 1));
     Ok(())
 }
 
@@ -88,11 +92,9 @@ fn alias_arbitrary_pool_index() -> Result<()> {
     let merged = link_wat(TWO_MEM_SHELL, USER_TVM_ONLY, &opts)?;
     let exports = exports_of(&merged)?;
     assert!(
-        exports
-            .iter()
-            .any(|(n, k, idx)| n == "hot_memory"
-                && matches!(k, wasmparser::ExternalKind::Memory)
-                && *idx == 1),
+        exports.iter().any(|(n, k, idx)| n == "hot_memory"
+            && matches!(k, wasmparser::ExternalKind::Memory)
+            && *idx == 1),
         "expected `hot_memory` to alias memory index 1; got {:?}",
         exports
     );
@@ -102,15 +104,14 @@ fn alias_arbitrary_pool_index() -> Result<()> {
 #[test]
 fn multiple_aliases_coexist() -> Result<()> {
     let opts = LinkOptions {
-        aliases: vec![
-            ("memory".to_string(), 0),
-            ("scratch".to_string(), 1),
-        ],
+        aliases: vec![("memory".to_string(), 0), ("scratch".to_string(), 1)],
     };
     let merged = link_wat(TWO_MEM_SHELL, USER_TVM_ONLY, &opts)?;
     let exports = exports_of(&merged)?;
     assert!(exports.iter().any(|(n, _, idx)| n == "memory" && *idx == 0));
-    assert!(exports.iter().any(|(n, _, idx)| n == "scratch" && *idx == 1));
+    assert!(exports
+        .iter()
+        .any(|(n, _, idx)| n == "scratch" && *idx == 1));
     Ok(())
 }
 
@@ -124,9 +125,7 @@ fn default_options_emit_no_aliases() -> Result<()> {
     let merged = link(&shell_bytes, &user_bytes)?;
     let exports = exports_of(&merged)?;
     assert!(
-        !exports
-            .iter()
-            .any(|(n, _, _)| n == "memory"),
+        !exports.iter().any(|(n, _, _)| n == "memory"),
         "default link() must not synthesize a `memory` export; got {:?}",
         exports
     );

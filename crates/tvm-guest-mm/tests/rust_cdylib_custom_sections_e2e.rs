@@ -113,8 +113,7 @@ fn custom_sections_survive_link_with_alias() -> anyhow::Result<()> {
     let user_bytes = build_consumer_cdylib()?;
     let test_payload: &[u8] =
         b"\x07\x00\x00\x00 fake component-type binary; first byte is the version tag";
-    let user_with_custom =
-        append_custom_section(user_bytes, "component-type:test", test_payload);
+    let user_with_custom = append_custom_section(user_bytes, "component-type:test", test_payload);
 
     // Link with --alias-memory0=memory equivalent.
     let params = tvm_guest_mm_link::ModuleParams {
@@ -126,12 +125,9 @@ fn custom_sections_survive_link_with_alias() -> anyhow::Result<()> {
     let options = tvm_guest_mm_link::LinkOptions {
         aliases: vec![("memory".to_string(), 0)],
     };
-    let linked_bytes = tvm_guest_mm_link::link_with_params_and_options(
-        &params,
-        &user_with_custom,
-        &options,
-    )
-    .context("linking consumer-with-imports + shell with aliases + customs")?;
+    let linked_bytes =
+        tvm_guest_mm_link::link_with_params_and_options(&params, &user_with_custom, &options)
+            .context("linking consumer-with-imports + shell with aliases + customs")?;
 
     // Validate the merged module still parses and validates.
     wasmparser::Validator::new_with_features(

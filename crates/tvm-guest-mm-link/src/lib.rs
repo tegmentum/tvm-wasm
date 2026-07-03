@@ -203,7 +203,9 @@ pub fn link_with_options(
                     forwarded.push(ForwardedImport {
                         module: imp.module,
                         name: imp.name,
-                        ty: ForwardedKind::Func { user_type_idx: ty_idx },
+                        ty: ForwardedKind::Func {
+                            user_type_idx: ty_idx,
+                        },
                     });
                 }
             }
@@ -335,7 +337,10 @@ pub fn link_with_options(
         if m == 0 {
             Ok(0)
         } else {
-            bail!("user module references memory index {} but only one (default) memory is supported", m);
+            bail!(
+                "user module references memory index {} but only one (default) memory is supported",
+                m
+            );
         }
     };
 
@@ -365,14 +370,8 @@ pub fn link_with_options(
     // if any (typically after Code), otherwise at the shell's
     // position. Other customs continue to flow through verbatim.
     let merged_name_section: Option<(Option<SectionMarker>, Vec<u8>)> = {
-        let shell_name = shell
-            .custom_sections
-            .iter()
-            .find(|cs| cs.name == "name");
-        let user_name = user
-            .custom_sections
-            .iter()
-            .find(|cs| cs.name == "name");
+        let shell_name = shell.custom_sections.iter().find(|cs| cs.name == "name");
+        let user_name = user.custom_sections.iter().find(|cs| cs.name == "name");
         let mut entries = NameSectionEntries::default();
         if let Some(cs) = shell_name {
             entries.absorb(
@@ -395,7 +394,9 @@ pub fn link_with_options(
         // Position: prefer user's marker (typically after Code), fall
         // back to shell's. If neither side had a name section, emit
         // nothing.
-        let pos = user_name.map(|cs| cs.after).or_else(|| shell_name.map(|cs| cs.after));
+        let pos = user_name
+            .map(|cs| cs.after)
+            .or_else(|| shell_name.map(|cs| cs.after));
         pos.map(|p| (p, entries.into_bytes()))
     };
 
@@ -408,34 +409,33 @@ pub fn link_with_options(
     // copies with a single merged + remapped section (see above), so
     // we skip emitting the originals and emit the merged blob at the
     // chosen position.
-    let emit_customs = |module: &mut wasm_encoder::Module,
-                        marker: Option<SectionMarker>|
-     -> Result<()> {
-        for cs in shell
-            .custom_sections
-            .iter()
-            .chain(user.custom_sections.iter())
-        {
-            if cs.after != marker || cs.name == "name" {
-                continue;
-            }
-            module.section(&wasm_encoder::CustomSection {
-                name: std::borrow::Cow::Borrowed(cs.name),
-                data: std::borrow::Cow::Borrowed(cs.data),
-            });
-        }
-        // Emit the merged name section if its target position
-        // matches `marker`.
-        if let Some((pos, data)) = &merged_name_section {
-            if *pos == marker {
+    let emit_customs =
+        |module: &mut wasm_encoder::Module, marker: Option<SectionMarker>| -> Result<()> {
+            for cs in shell
+                .custom_sections
+                .iter()
+                .chain(user.custom_sections.iter())
+            {
+                if cs.after != marker || cs.name == "name" {
+                    continue;
+                }
                 module.section(&wasm_encoder::CustomSection {
-                    name: std::borrow::Cow::Borrowed("name"),
-                    data: std::borrow::Cow::Borrowed(data),
+                    name: std::borrow::Cow::Borrowed(cs.name),
+                    data: std::borrow::Cow::Borrowed(cs.data),
                 });
             }
-        }
-        Ok(())
-    };
+            // Emit the merged name section if its target position
+            // matches `marker`.
+            if let Some((pos, data)) = &merged_name_section {
+                if *pos == marker {
+                    module.section(&wasm_encoder::CustomSection {
+                        name: std::borrow::Cow::Borrowed("name"),
+                        data: std::borrow::Cow::Borrowed(data),
+                    });
+                }
+            }
+            Ok(())
+        };
 
     // Customs that appeared before any real section in either input.
     emit_customs(&mut module, None)?;
@@ -623,11 +623,7 @@ pub fn link_with_options(
                     alias_name
                 );
             }
-            exports.export(
-                alias_name,
-                wasm_encoder::ExportKind::Memory,
-                *mem_idx,
-            );
+            exports.export(alias_name, wasm_encoder::ExportKind::Memory, *mem_idx);
         }
         module.section(&exports);
     }
@@ -674,8 +670,7 @@ pub fn link_with_options(
     //   - Otherwise, rewrite every shell body through the rewriter so
     //     `call`/`ref.func`/`global.*`/`table.*` ops are renumbered.
     //   - User code is always rewritten.
-    let shell_needs_renumber =
-        fwd_func_count != 0 || fwd_global_count != 0 || fwd_table_count != 0;
+    let shell_needs_renumber = fwd_func_count != 0 || fwd_global_count != 0 || fwd_table_count != 0;
     {
         let mut codes = wasm_encoder::CodeSection::new();
         if shell_needs_renumber {
@@ -792,9 +787,7 @@ impl NameSectionEntries {
         FTy: Fn(u32) -> u32,
     {
         use wasmparser::Name;
-        let reader = wasmparser::NameSectionReader::new(
-            wasmparser::BinaryReader::new(data, 0),
-        );
+        let reader = wasmparser::NameSectionReader::new(wasmparser::BinaryReader::new(data, 0));
         for sub in reader {
             let sub = sub.context("decoding name-section subsection")?;
             match sub {
@@ -968,7 +961,6 @@ fn sorted_unique_indirect(
     out
 }
 
-
 // ----------------------------------------------------------------
 // Parser model — what we extract from each input module.
 // ----------------------------------------------------------------
@@ -1068,7 +1060,9 @@ enum ForwardedKind {
     /// Function import. The carried `user_type_idx` is the index in the
     /// user module's type space; it must be remapped through
     /// `map_user_type` at emit time.
-    Func { user_type_idx: u32 },
+    Func {
+        user_type_idx: u32,
+    },
     Global(wasm_encoder::GlobalType),
     Table(wasm_encoder::TableType),
 }
@@ -1440,15 +1434,7 @@ where
         let after = op_reader.original_position();
         let raw = &body_bytes[before - body_origin..after - body_origin];
         rewrite_op(
-            &op,
-            raw,
-            types,
-            &mut func,
-            map_func,
-            map_global,
-            map_table,
-            map_type,
-            side,
+            &op, raw, types, &mut func, map_func, map_global, map_table, map_type, side,
         )?;
     }
     Ok(func)
@@ -2021,9 +2007,9 @@ fn map_simple_op(op: &Operator<'_>, func: &mut wasm_encoder::Function) -> Result
 fn block_type_to_encoder(b: wasmparser::BlockType) -> Result<wasm_encoder::BlockType> {
     match b {
         wasmparser::BlockType::Empty => Ok(wasm_encoder::BlockType::Empty),
-        wasmparser::BlockType::Type(ty) => Ok(wasm_encoder::BlockType::Result(val_type_to_encoder(
-            ty,
-        )?)),
+        wasmparser::BlockType::Type(ty) => {
+            Ok(wasm_encoder::BlockType::Result(val_type_to_encoder(ty)?))
+        }
         wasmparser::BlockType::FuncType(idx) => Ok(wasm_encoder::BlockType::FunctionType(idx)),
     }
 }

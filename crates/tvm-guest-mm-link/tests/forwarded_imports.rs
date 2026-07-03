@@ -153,7 +153,11 @@ fn forwarded_call_renumbers_user_call_target() -> Result<()> {
     let go = instance.get_typed_func::<(i32, i32), i32>(&mut store, "go")?;
     let r = go.call(&mut store, (1, 2))?;
     assert_eq!(r, 0, "tvm_mm.tvm_load_u8 stub returns 0");
-    assert_eq!(*log_calls.lock().unwrap(), 1, "host.log must be invoked once");
+    assert_eq!(
+        *log_calls.lock().unwrap(),
+        1,
+        "host.log must be invoked once"
+    );
     Ok(())
 }
 
