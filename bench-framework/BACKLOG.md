@@ -13,10 +13,11 @@ Every deferred piece of the matrix has an explicit slot here. A claim
 
 ## Runtimes
 
-- [ ] **Wasmer backend** — adapter crate `tvm-bench-runner-wasmer` mirroring
-  `tvm-bench-runner` but using the Wasmer engine. WIT path will need its
-  own bindings since Wasmer's component-model support differs from
-  wasmtime's.
+- [x] **Wasmer backend** — `tvm-bench-runner-wasmer` runs the M32 baseline
+  workloads on the Wasmer engine as a cross-engine validator so the
+  wasmtime M32/M64 numbers aren't taken as engine-specific artifacts.
+  TVM variants stay wasmtime-only because they depend on the
+  raw_linker host functions.
 - [ ] **V8 backend** — node.js harness or a C++ shim. JIT warm-up needs
   separate cold/steady reporting (see THREATS.md).
 

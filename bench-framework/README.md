@@ -27,8 +27,8 @@ Runtimes:
 
 | Runtime | Status |
 |---|---|
-| Wasmtime | implemented |
-| Wasmer | **deferred** |
+| Wasmtime | implemented — primary runner (all variants) |
+| Wasmer | implemented — cross-engine validator (M32 only; no TVM raw imports) |
 | V8 | **deferred** |
 
 See `BACKLOG.md` for the explicit list of deferred classes/backends/runtimes,
@@ -57,8 +57,11 @@ regression in the others.
 # Build the wasm guest workloads.
 ./build.sh
 
-# Run the harness.
+# Run the harness (wasmtime — primary).
 cargo run -p tvm-bench-runner --release
+
+# Cross-engine validator (wasmer, M32 only).
+cargo run -p tvm-bench-runner-wasmer --release
 ```
 
 Results land in `results/` as JSON. Reproducibility is enforced by a fixed
