@@ -240,10 +240,8 @@ fn name_section_lands_after_code() -> Result<()> {
     for payload in wasmparser::Parser::new(0).parse_all(&merged) {
         match payload? {
             wasmparser::Payload::CodeSectionStart { .. } => saw_code = true,
-            wasmparser::Payload::CustomSection(cs) if cs.name() == "name" => {
-                if saw_code {
-                    name_after_code = true;
-                }
+            wasmparser::Payload::CustomSection(cs) if cs.name() == "name" && saw_code => {
+                name_after_code = true;
             }
             _ => {}
         }

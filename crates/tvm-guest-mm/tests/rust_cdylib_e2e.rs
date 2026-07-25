@@ -150,7 +150,7 @@ fn rust_cdylib_consumer_round_trips_pages() -> anyhow::Result<()> {
     // 4 KiB.
     let store_u8_p1 = instance.get_typed_func::<(u32, u32), ()>(&mut store, "tvm_store_u8_p1")?;
     for i in 0..tvm_rust_cdylib_consumer_consts::PAGE_SIZE {
-        store_u8_p1.call(&mut store, (i, (i & 0xff) as u32))?;
+        store_u8_p1.call(&mut store, (i, i & 0xff))?;
     }
     let materialize =
         instance.get_typed_func::<(u32, u32), u32>(&mut store, "materialize_hot_page")?;
@@ -181,7 +181,7 @@ fn rust_cdylib_consumer_round_trips_pages() -> anyhow::Result<()> {
     // Spot-check a few bytes via read_hot_byte.
     for &i in &[0u32, 1, 17, 4095] {
         let v = read_hot.call(&mut store, (2, i))?;
-        assert_eq!(v, ((i ^ 0xff) & 0xff) as u32, "install byte {} wrong", i);
+        assert_eq!(v, (i ^ 0xff) & 0xff, "install byte {} wrong", i);
     }
 
     // ----- 6. sum_hot_page_headers: per-page u32 sum -----
