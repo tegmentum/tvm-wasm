@@ -64,7 +64,10 @@ tvm.read(h, 3);         // => 1,2,3
 
 ```sh
 # 1. generate the guest module (writes public/tvm-guest.wasm)
-cargo run -p tvm-guest-mm --bin gen_guest_wasm -- --pools 64 web/tvm-web/public/tvm-guest.wasm
+# --max-pages-per-pool 256 caps the per-tab wasm virtual reservation at
+# 1 GiB (pools × max_pages × 64 KiB); without it Chromium's V8 refuses to
+# instantiate 64 memories declaring the 4-GiB wasm32 max.
+cargo run -p tvm-guest-mm --bin gen_guest_wasm -- --pools 64 --max-pages-per-pool 256 web/tvm-web/public/tvm-guest.wasm
 
 # 2. install + verify
 cd web/tvm-web

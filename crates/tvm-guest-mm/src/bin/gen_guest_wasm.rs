@@ -7,10 +7,17 @@
 //! `tvm_copy_to_default`, …) — and writes it out.
 //!
 //! Usage:
-//!   gen_guest_wasm [--pools N] [--wat] <out_path>
+//!   gen_guest_wasm [--pools N] [--max-pages-per-pool N] [--wat] <out_path>
 //!
 //! With `--wat` the raw WAT text is written instead of compiled bytes
 //! (handy for inspection / `wasm-tools print` diffing).
+//!
+//! `--max-pages-per-pool` sets the declared wasm memory maximum per pool
+//! (each page = 64 KiB). The default of 65536 (4 GiB) is fine on host
+//! wasmtime and Node's V8; browser V8 reserves virtual address space up
+//! to that maximum per exported memory for its trap-handler fast path,
+//! so `pools × max_pages × 64 KiB` must fit the per-tab budget — pass
+//! a smaller value (e.g. 256 → 16 MiB per pool) for browser builds.
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -18,7 +25,9 @@ use std::process::ExitCode;
 use tvm_guest_mm::{tvm_guest_mm_module_template, ModuleParams, DEFAULT_POOL_COUNT};
 
 fn main() -> ExitCode {
+    let defaults = ModuleParams::default();
     let mut pools = DEFAULT_POOL_COUNT;
+    let mut max_pages = defaults.max_pages_per_pool;
     let mut emit_wat = false;
     let mut out: Option<String> = None;
 
@@ -34,9 +43,24 @@ fn main() -> ExitCode {
                     Err(_) => return fail("--pools value must be an integer"),
                 }
             }
+            "--max-pages-per-pool" => {
+                let Some(v) = args.next() else {
+                    return fail("--max-pages-per-pool needs a value");
+                };
+                match v.parse::<u32>() {
+                    Ok(0) => return fail("--max-pages-per-pool must be >= 1"),
+                    Ok(n) if n > 65536 => {
+                        return fail("--max-pages-per-pool exceeds wasm32 cap (65536)")
+                    }
+                    Ok(n) => max_pages = n,
+                    Err(_) => return fail("--max-pages-per-pool value must be an integer"),
+                }
+            }
             "--wat" => emit_wat = true,
             "-h" | "--help" => {
-                println!("usage: gen_guest_wasm [--pools N] [--wat] <out_path>");
+                println!(
+                    "usage: gen_guest_wasm [--pools N] [--max-pages-per-pool N] [--wat] <out_path>"
+                );
                 return ExitCode::SUCCESS;
             }
             other if !other.starts_with('-') => out = Some(other.to_string()),
@@ -48,9 +72,17 @@ fn main() -> ExitCode {
         return fail("missing <out_path>");
     };
 
+    if max_pages < defaults.initial_pages_per_pool {
+        return fail(&format!(
+            "--max-pages-per-pool ({max_pages}) < initial pages ({})",
+            defaults.initial_pages_per_pool
+        ));
+    }
+
     let params = ModuleParams {
         n_pools: pools,
-        ..ModuleParams::default()
+        max_pages_per_pool: max_pages,
+        ..defaults
     };
     let wat = tvm_guest_mm_module_template(&params);
 
@@ -73,7 +105,10 @@ fn main() -> ExitCode {
 
     match result {
         Ok(()) => {
-            eprintln!("wrote {out} ({pools} pools, {} bytes WAT)", wat.len());
+            eprintln!(
+                "wrote {out} ({pools} pools, max {max_pages} pages/pool, {} bytes WAT)",
+                wat.len()
+            );
             ExitCode::SUCCESS
         }
         Err(e) => fail(&format!("write {out}: {e}")),

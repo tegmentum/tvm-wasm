@@ -38,7 +38,11 @@ jobs:
         with:
           node-version: 22
       - name: generate guest wasm
-        run: cargo run -q -p tvm-guest-mm --bin gen_guest_wasm -- --pools 64 web/tvm-web/public/tvm-guest.wasm
+        # --max-pages-per-pool 256 keeps the per-tab wasm virtual reservation
+        # (pools × max_pages × 64 KiB = 1 GiB) inside Chromium's budget; the
+        # default of 65536 pages/pool would ask V8 for 256 GiB and OOM at
+        # instantiate time in the playwright step.
+        run: cargo run -q -p tvm-guest-mm --bin gen_guest_wasm -- --pools 64 --max-pages-per-pool 256 web/tvm-web/public/tvm-guest.wasm
       - name: install web deps
         working-directory: web/tvm-web
         run: npm ci || npm install
