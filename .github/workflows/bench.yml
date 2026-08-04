@@ -25,6 +25,7 @@ jobs:
           latest=$(ls -t bench-framework/results/all-*.json | head -1)
           python3 bench-framework/check_regression.py "$latest"
       - name: upload results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: bench-results
