@@ -12,6 +12,7 @@
 //! With `--wat` the raw WAT text is written instead of compiled bytes
 //! (handy for inspection / `wasm-tools print` diffing).
 
+use std::path::Path;
 use std::process::ExitCode;
 
 use tvm_guest_mm::{tvm_guest_mm_module_template, ModuleParams, DEFAULT_POOL_COUNT};
@@ -52,6 +53,14 @@ fn main() -> ExitCode {
         ..ModuleParams::default()
     };
     let wat = tvm_guest_mm_module_template(&params);
+
+    if let Some(parent) = Path::new(&out).parent() {
+        if !parent.as_os_str().is_empty() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                return fail(&format!("create {}: {e}", parent.display()));
+            }
+        }
+    }
 
     let result = if emit_wat {
         std::fs::write(&out, wat.as_bytes())
