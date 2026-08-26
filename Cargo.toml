@@ -39,7 +39,7 @@ repository = "https://github.com/tegmentum/tvm-wasm"
 # opt into std features as they need them.
 thiserror = { version = "2.0", default-features = false }
 hashbrown = "0.15"
-wasmtime = { version = "47.0.2", features = ["component-model", "cranelift", "runtime"] }
+wasmtime = { version = "48.0.0", features = ["component-model", "cranelift", "runtime"] }
 wat = "1"
 wit-component = "0.240"
 anyhow = "1.0"
