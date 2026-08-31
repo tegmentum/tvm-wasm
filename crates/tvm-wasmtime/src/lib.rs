@@ -50,6 +50,7 @@ pub mod memory_factory;
 pub mod per_actor;
 pub mod prelude;
 pub mod raw_linker;
+pub mod raw_linker_wasmos;
 pub mod region_view;
 pub mod runtime_persist;
 pub mod shared_host;

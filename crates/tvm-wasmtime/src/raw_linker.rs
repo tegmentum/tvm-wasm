@@ -41,7 +41,7 @@ pub const ERR_PINNED: i32 = 6;
 pub const ERR_GUEST_MEMORY: i32 = 7;
 pub const ERR_OTHER: i32 = 9;
 
-fn err_code(e: &TvmError) -> i32 {
+pub(crate) fn err_code(e: &TvmError) -> i32 {
     match e {
         TvmError::RegionNotFound(_) => ERR_REGION_NOT_FOUND,
         TvmError::StaleHandle => ERR_STALE_HANDLE,
