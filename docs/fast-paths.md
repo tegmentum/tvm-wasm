@@ -223,3 +223,90 @@ double-copy.
   JVM costs within 2–3× of M32 instead of 100×.
 - **Real CPU counters.** Cache-miss / TLB-miss data would let us validate
   H2 (locality advantage) — currently we only have wall-clock numbers.
+
+---
+
+## The wasmos raw path (Phase 6.9.a)
+
+The raw path historically lived on wasmtime — `add_raw_imports` takes a
+`wasmtime::Linker<T>` where `T: AsMut<TvmHost>`. That works well when your
+whole pipeline is wasmtime-based, but locks the raw path to one engine.
+
+Since ADR-0029, a second raw path lives alongside the wasmtime one, sitting
+on the wasmos runtime-abstraction layer. It's in
+`tvm_wasmtime::raw_linker_wasmos` and offers the same `tvm.*` import surface,
+but registers handlers through `wasmos_runtime_api::CoreImports` instead of
+`wasmtime::Linker`. Any wasmos-backed adapter (wasmtime v48, wasmtime edge,
+WAMR) can now host the raw path.
+
+### API shape
+
+```rust,ignore
+use tvm_wasmtime::raw_linker_wasmos::add_raw_imports;
+use tvm_wasmtime::SharedTvmHost;
+use wasmos_runtime_api::CoreImports;
+
+let shared = SharedTvmHost::new();
+let imports = add_raw_imports(CoreImports::new(), shared.clone());
+// Thread `imports` into your ExecutionContext, then instantiate:
+//   let mut ctx = ExecutionContext::new();
+//   ctx.core_imports = imports;
+//   let instance = runtime.instantiate_module(&compiled, ctx).await?;
+```
+
+Two entry points, both fluent-builder-style:
+
+- `add_raw_imports(imports, host)` — memory export named `"memory"`.
+- `add_raw_imports_with_memory_name(imports, host, name)` — custom name.
+
+`add_raw_shared*` aliases exist for API symmetry with the wasmtime path but
+delegate to the same implementation — the wasmos abstraction unified the
+two batches (see the module docstring for why).
+
+### Which path to pick
+
+| Situation | Path |
+|---|---|
+| Wasmtime-only pipeline, single-threaded, perf-critical | wasmtime `raw_linker` (unchanged) |
+| Multi-runtime dispatch (wasmtime + WAMR) or planning to portability-test | `raw_linker_wasmos` |
+| Cross-store sharing (multiple actors, one region directory) | either, but `raw_linker_wasmos` handles it uniformly (no per-Store cache to invalidate) |
+| Benchmarking wasmos-overhead vs wasmtime-native | run both paths side-by-side; the crate exports both |
+
+### Perf cost of the wasmos path
+
+The wasmtime `raw_linker` handlers get exclusive `&mut TvmHost` via
+`Caller::data_mut()` — zero locking, direct memory pointer via a
+cached-per-store `Memory` handle. The wasmos handlers capture a
+`SharedTvmHost` (`Arc<Mutex<TvmHost>>`) at registration and grab the lock
+per call; guest memory is fetched fresh through the adapter's Caller/Instance
+surface every invocation. Both costs are real and measurable.
+
+Two optimizations exist inside the wasmos surface that can bring the cost
+back most of the way — both are already wired on all three adapters, so
+switching is a per-handler change with no cross-repo work:
+
+1. **`ctx.with_guest_memory_mut(name, |slice| { ... })`** — zero-copy
+   scratch-buffer elimination for the read/write/gather handlers. Same shape
+   as raw's own `fast_read`/`fast_write` but through the safe wasmos surface.
+2. **`CoreImports::register_static<F>(F)`** — monomorphized dispatch, one
+   fn pointer per registration instead of the `Arc<dyn CoreImportFn>` vtable
+   hop.
+
+Session 1 lands memcpy + `Arc<dyn>` throughout. Phase 6.9.b benchmarks
+measure the delta; if it matters for a specific hot handler, the switch
+above is a small diff.
+
+### What's covered
+
+`raw_linker_wasmos` registers all 26 handlers of the wasmtime non-shared
+batch:
+
+- `alloc`, `dealloc`, `copy_region`, `last_error` — region-lifecycle
+- `read`, `write`, `read_gather`, `index_of`, `byte_histogram` — memory
+- `sum_u8`, `find_byte`, `hash_fnv1a`, `count_byte`, `eq`, `min_max_u8`,
+  `xor_into_region`, `sum_u32_le`, `max_u32_le`, `and_fold_u8`, `or_fold_u8`,
+  `xor_fold_u8`, `count_in_range`, `lex_cmp`, `popcount`, `fill`,
+  `xor_with_byte` — reducers
+
+Same wire-level API, same error codes, same guest-observable semantics.
+The two paths run side-by-side in this crate; consumers pick.
