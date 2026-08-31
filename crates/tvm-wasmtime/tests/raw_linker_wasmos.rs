@@ -331,3 +331,144 @@ async fn wasmos_raw_coexists_with_static_dispatch() -> anyhow::Result<()> {
     let _ = (Arc::new(0u8), CoreRegionKind::HotHeap, shared);
     Ok(())
 }
+
+// ────────────────────────────────────────────────────────────────────
+// Phase 6.9.a Session 2 — cross-instance shared-host semantics.
+//
+// Proves that the `add_raw_shared*` alias delivers the same
+// guest-observable semantics as the wasmtime `add_raw_shared` peer:
+// two `ModuleInstance`s sharing ONE `SharedTvmHost` see each other's
+// region writes, and neither corrupts the other's guest memory
+// access (no `cached_memory` cross-store hazard because wasmos
+// handlers never cache).
+// ────────────────────────────────────────────────────────────────────
+
+/// Guest that writes a byte into region 0 (offset zero) via
+/// `tvm.write`, or reads the same byte back via `tvm.read` + sum. Two
+/// exports: `write_one(handle, byte)` and `sum_one(handle)`.
+const CROSS_INSTANCE_WAT: &str = r#"
+(module
+  (import "tvm" "write" (func $write (param i64 i32 i32) (result i32)))
+  (import "tvm" "read"  (func $read  (param i64 i32 i32) (result i32)))
+  (memory (export "memory") 1)
+
+  ;; Stage `byte` at offset 0, then tvm.write 1 byte into `handle`.
+  ;; Returns the tvm error code (0 ok).
+  (func (export "write_one") (param $h i64) (param $byte i32) (result i32)
+    (i32.store8 (i32.const 0) (local.get $byte))
+    (call $write (local.get $h) (i32.const 0) (i32.const 1)))
+
+  ;; Zero offset 0, tvm.read 1 byte from `handle` back into offset 0,
+  ;; then return the byte.
+  (func (export "sum_one") (param $h i64) (result i32)
+    (i32.store8 (i32.const 0) (i32.const 0))
+    (drop (call $read (local.get $h) (i32.const 0) (i32.const 1)))
+    (i32.load8_u (i32.const 0)))
+)
+"#;
+
+/// Alloc a 1-byte region + return its packed handle. Used to seed the
+/// cross-instance test; runs pre-instantiation via direct host mut.
+fn alloc_one_byte(shared: &SharedTvmHost, region: u16) -> anyhow::Result<i64> {
+    let mut g = shared.lock();
+    let h = g.directory.alloc(region, 1)?;
+    Ok(h.pack() as i64)
+}
+
+/// Instantiate the cross-instance guest against `shared` — helper
+/// used twice to build two independent instances that share one host.
+async fn instantiate_cross_instance(
+    rt: &WasmtimeV48Runtime,
+    shared: SharedTvmHost,
+) -> anyhow::Result<ModuleInstance> {
+    instantiate(rt, CROSS_INSTANCE_WAT, shared).await
+}
+
+/// Cross-instance write-then-read via `add_raw_shared`.
+///
+/// Two ModuleInstances share ONE SharedTvmHost. Instance A writes
+/// 0x2A into a region via tvm.write. Instance B reads the same
+/// region back via tvm.read. B observes A's write — proves the
+/// shared-host semantics work end-to-end through the wasmos alias.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wasmos_raw_shared_cross_instance_visibility() -> anyhow::Result<()> {
+    // Use `add_raw_shared` (the Session 2 alias) explicitly to prove
+    // the alias delegates correctly.
+    use tvm_wasmtime::raw_linker_wasmos::add_raw_shared;
+
+    let shared = SharedTvmHost::new();
+    let region = {
+        let mut g = shared.lock();
+        ManagerHost::create_region(&mut *g, RegionKind::HotHeap, 64)?
+    };
+    let handle = alloc_one_byte(&shared, region)?;
+    assert!(handle != 0);
+
+    let rt = WasmtimeV48Runtime::new(Default::default())?;
+
+    // Build TWO instances against the SAME SharedTvmHost via the
+    // shared-batch alias. This mirrors the wasmtime pattern of two
+    // Store<SharedTvmHost>s pointing at one Arc.
+    let wasm: Vec<u8> = wat::parse_str(CROSS_INSTANCE_WAT)?;
+    let compiled = rt
+        .compile_module(
+            ComponentSource::Bytes {
+                bytes: Bytes::from(wasm),
+                name: Some("cross-instance".into()),
+            },
+            CompileOptions::default(),
+        )
+        .await?;
+
+    let mut inst_a = {
+        let core_imports = add_raw_shared(CoreImports::new(), shared.clone());
+        let ctx = ExecutionContext {
+            core_imports,
+            ..ExecutionContext::new()
+        };
+        rt.instantiate_module(&compiled, ctx).await?
+    };
+    let mut inst_b = {
+        let core_imports = add_raw_shared(CoreImports::new(), shared.clone());
+        let ctx = ExecutionContext {
+            core_imports,
+            ..ExecutionContext::new()
+        };
+        rt.instantiate_module(&compiled, ctx).await?
+    };
+
+    // Instance A writes 0x2A into region 0 offset 0.
+    let out = inst_a
+        .call_function(
+            "write_one",
+            &[CoreValue::I64(handle), CoreValue::I32(0x2A)],
+        )
+        .await?;
+    assert_eq!(out, vec![CoreValue::I32(0)], "A's write ok");
+
+    // Instance B reads region 0 offset 0. Because the region lives
+    // in SharedTvmHost (shared between A and B) and the wasmos
+    // handlers never cache per-store guest-memory pointers, B
+    // observes A's write.
+    let out = inst_b
+        .call_function("sum_one", &[CoreValue::I64(handle)])
+        .await?;
+    assert_eq!(out, vec![CoreValue::I32(0x2A)], "B observes A's write");
+
+    // Instance B writes back 0x55; A observes the update. Symmetric.
+    let out = inst_b
+        .call_function(
+            "write_one",
+            &[CoreValue::I64(handle), CoreValue::I32(0x55)],
+        )
+        .await?;
+    assert_eq!(out, vec![CoreValue::I32(0)]);
+    let out = inst_a
+        .call_function("sum_one", &[CoreValue::I64(handle)])
+        .await?;
+    assert_eq!(out, vec![CoreValue::I32(0x55)], "A observes B's write");
+
+    // Silence unused-fn warning if the compiler dead-strips.
+    let _ = instantiate_cross_instance;
+    Ok(())
+}

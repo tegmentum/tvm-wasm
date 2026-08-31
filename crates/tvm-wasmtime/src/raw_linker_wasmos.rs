@@ -1072,3 +1072,53 @@ pub fn add_raw_imports_with_memory_name(
             Arc::new(TvmByteHistogram { host, memory_name }) as Arc<dyn CoreImportFn>,
         )
 }
+
+// ────────────────────────────────────────────────────────────────────
+// `add_raw_shared*` — API-symmetric aliases (Phase 6.9.a Session 2).
+//
+// Under wasmtime, `add_raw_shared*` and `add_raw_imports*` are
+// separate function surfaces because the store data type differs
+// (`Store<T: AsMut<SharedTvmHost>>` vs `Store<T: AsMut<TvmHost>>`).
+// The shared batch additionally fetches guest memory *uncached* on
+// every call — the wasmtime non-shared batch caches a pointer inside
+// `TvmHost.cached_memory` per store, and sharing that host across
+// stores lets store B use store A's cached pointer (memory
+// corruption). See raw_linker.rs docstring on `add_raw_shared` for
+// the full rationale.
+//
+// Under wasmos, both hazards vanish by construction:
+//
+// * `CoreImports` handlers are stateless `Arc<dyn CoreImportFn>`
+//   objects that carry their own captured `SharedTvmHost` — there's
+//   no Store<T> to reach through, so the "shared" concurrency model
+//   is the ONLY model available. That's what
+//   `add_raw_imports_with_memory_name` above already does.
+// * `ctx.guest_memory_{read,write,size}` fetches the memory from the
+//   currently-executing instance via the adapter (v48's
+//   `wasmtime::Caller` or WAMR's TLS-guarded `wamrx::Instance`) on
+//   every call — no pointer is cached across calls, let alone across
+//   instances.
+//
+// So the wasmos abstraction unified the two paths. These aliases
+// exist to keep the migration ergonomic: consumers doing `add_raw_
+// shared(&mut linker)?` under wasmtime can search-replace to
+// `add_raw_shared(imports, host)` under wasmos without changing the
+// function name, and the semantics they wanted (cross-store safety +
+// shared host) hold.
+
+/// Alias for [`add_raw_imports`] — API symmetric with the wasmtime
+/// `add_raw_shared` entry point (`raw_linker.rs` line 715+). See the
+/// module-level docstring for why the two paths unify under wasmos.
+pub fn add_raw_shared(imports: CoreImports, host: SharedTvmHost) -> CoreImports {
+    add_raw_imports(imports, host)
+}
+
+/// Alias for [`add_raw_imports_with_memory_name`] — API symmetric
+/// with the wasmtime `add_raw_shared_with_memory_name` entry point.
+pub fn add_raw_shared_with_memory_name(
+    imports: CoreImports,
+    host: SharedTvmHost,
+    memory_name: &'static str,
+) -> CoreImports {
+    add_raw_imports_with_memory_name(imports, host, memory_name)
+}
