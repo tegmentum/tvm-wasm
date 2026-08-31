@@ -223,3 +223,93 @@ double-copy.
   JVM costs within 2–3× of M32 instead of 100×.
 - **Real CPU counters.** Cache-miss / TLB-miss data would let us validate
   H2 (locality advantage) — currently we only have wall-clock numbers.
+
+---
+
+## The wasmos raw path (Phase 6.9.a)
+
+The raw path historically lived on wasmtime — `add_raw_imports` takes a
+`wasmtime::Linker<T>` where `T: AsMut<TvmHost>`. That works well when your
+whole pipeline is wasmtime-based, but locks the raw path to one engine.
+
+Since ADR-0029, a second raw path lives alongside the wasmtime one, sitting
+on the wasmos runtime-abstraction layer. It's in
+`tvm_wasmtime::raw_linker_wasmos` and offers the same `tvm.*` import surface,
+but registers handlers through `wasmos_runtime_api::CoreImports` instead of
+`wasmtime::Linker`. Any wasmos-backed adapter (wasmtime v48, wasmtime edge,
+WAMR) can now host the raw path.
+
+### API shape
+
+```rust,ignore
+use tvm_wasmtime::raw_linker_wasmos::add_raw_imports;
+use tvm_wasmtime::SharedTvmHost;
+use wasmos_runtime_api::CoreImports;
+
+let shared = SharedTvmHost::new();
+let imports = add_raw_imports(CoreImports::new(), shared.clone());
+// Thread `imports` into your ExecutionContext, then instantiate:
+//   let mut ctx = ExecutionContext::new();
+//   ctx.core_imports = imports;
+//   let instance = runtime.instantiate_module(&compiled, ctx).await?;
+```
+
+Two entry points, both fluent-builder-style:
+
+- `add_raw_imports(imports, host)` — memory export named `"memory"`.
+- `add_raw_imports_with_memory_name(imports, host, name)` — custom name.
+
+`add_raw_shared*` aliases exist for API symmetry with the wasmtime path but
+delegate to the same implementation — the wasmos abstraction unified the
+two batches (see the module docstring for why).
+
+### Which path to pick
+
+| Situation | Path |
+|---|---|
+| Wasmtime-only pipeline, single-threaded, perf-critical | wasmtime `raw_linker` (unchanged) |
+| Multi-runtime dispatch (wasmtime + WAMR) or planning to portability-test | `raw_linker_wasmos` |
+| Cross-store sharing (multiple actors, one region directory) | either, but `raw_linker_wasmos` handles it uniformly (no per-Store cache to invalidate) |
+| Benchmarking wasmos-overhead vs wasmtime-native | run both paths side-by-side; the crate exports both |
+
+### Perf cost of the wasmos path
+
+The wasmtime `raw_linker` handlers get exclusive `&mut TvmHost` via
+`Caller::data_mut()` — zero locking, direct memory pointer via a
+cached-per-store `Memory` handle. The wasmos handlers capture a
+`SharedTvmHost` (`Arc<Mutex<TvmHost>>`) at registration and grab the lock
+per call; guest memory is fetched fresh through the adapter's Caller/Instance
+surface every invocation.
+
+Phase 6.9.b measured this. **The absolute overhead is ~700-900ns per call,
+essentially constant across payload sizes** (measured on macOS arm64,
+release build, 50 samples per case). That's the abstraction tax: `Arc<dyn>`
+vtable dispatch, `Vec<CoreValue>` allocation for args + return, tokio's
+`block_on` bridging into an async runtime, `Caller::get_export` HashMap
+lookup for memory-touching handlers, uncontended mutex acquisition. All
+real, none apparent from the API surface.
+
+For a raw `tvm.alloc` call (~46ns wasmtime-native), that's a 20× regression.
+For a 16KB `tvm.write` call (~217ns wasmtime-native), 7×. For a call that
+does 100μs of real work, <1% — portable and fine.
+
+**See `docs/wasmos-overhead.md` for the full numbers table + optimization
+escape hatches.** Short version: if you're doing hot-loop
+call-per-element with tiny work, stay on `raw_linker`. If you need
+portability across adapters and can spend an extra microsecond per call,
+`raw_linker_wasmos` is the shape.
+
+### What's covered
+
+`raw_linker_wasmos` registers all 26 handlers of the wasmtime non-shared
+batch:
+
+- `alloc`, `dealloc`, `copy_region`, `last_error` — region-lifecycle
+- `read`, `write`, `read_gather`, `index_of`, `byte_histogram` — memory
+- `sum_u8`, `find_byte`, `hash_fnv1a`, `count_byte`, `eq`, `min_max_u8`,
+  `xor_into_region`, `sum_u32_le`, `max_u32_le`, `and_fold_u8`, `or_fold_u8`,
+  `xor_fold_u8`, `count_in_range`, `lex_cmp`, `popcount`, `fill`,
+  `xor_with_byte` — reducers
+
+Same wire-level API, same error codes, same guest-observable semantics.
+The two paths run side-by-side in this crate; consumers pick.

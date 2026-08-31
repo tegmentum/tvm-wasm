@@ -10,6 +10,13 @@ tvm-core = { path = "../tvm-core" }
 wasmtime = { workspace = true }
 anyhow = { workspace = true }
 
+# ADR-0029 Phase 6.9.a — the wasmos-runtime-api migration path.
+# Sibling repo path deps mirror the wasm-cm approach in
+# `hosts/wasmos-cm/Cargo.toml`. Deps become `version = "0.1"` once
+# wasmos publishes to crates.io.
+wasmos-runtime-api = { path = "../../../wasmos/runtime/api" }
+async-trait = "0.1"
+
 [dev-dependencies]
 anyhow = { workspace = true }
 wat = { workspace = true }
@@ -18,10 +25,21 @@ tempfile = "3"
 criterion = "0.5"
 tvm-test-harness = { path = "../tvm-test-harness" }
 
+# Phase 6.9.a — v48 wasmos adapter is our reference back-end for
+# raw_linker_wasmos integration tests. Path dep for the migration
+# window; picks up `version = "0.1"` when wasmos publishes.
+wasmos-runtime-wasmtime-v48 = { path = "../../../wasmos/runtime/wasmtime/v48" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
 [[bench]]
 name = "host_paths"
 harness = false
 
 [[bench]]
 name = "reducer_imports"
+harness = false
+
+# ADR-0029 Phase 6.9.b — wasmos-overhead comparison bench.
+[[bench]]
+name = "wasmos_overhead"
 harness = false
