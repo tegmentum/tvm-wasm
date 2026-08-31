@@ -38,3 +38,8 @@ harness = false
 [[bench]]
 name = "reducer_imports"
 harness = false
+
+# ADR-0029 Phase 6.9.b — wasmos-overhead comparison bench.
+[[bench]]
+name = "wasmos_overhead"
+harness = false

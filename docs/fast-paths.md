@@ -279,22 +279,25 @@ The wasmtime `raw_linker` handlers get exclusive `&mut TvmHost` via
 cached-per-store `Memory` handle. The wasmos handlers capture a
 `SharedTvmHost` (`Arc<Mutex<TvmHost>>`) at registration and grab the lock
 per call; guest memory is fetched fresh through the adapter's Caller/Instance
-surface every invocation. Both costs are real and measurable.
+surface every invocation.
 
-Two optimizations exist inside the wasmos surface that can bring the cost
-back most of the way — both are already wired on all three adapters, so
-switching is a per-handler change with no cross-repo work:
+Phase 6.9.b measured this. **The absolute overhead is ~700-900ns per call,
+essentially constant across payload sizes** (measured on macOS arm64,
+release build, 50 samples per case). That's the abstraction tax: `Arc<dyn>`
+vtable dispatch, `Vec<CoreValue>` allocation for args + return, tokio's
+`block_on` bridging into an async runtime, `Caller::get_export` HashMap
+lookup for memory-touching handlers, uncontended mutex acquisition. All
+real, none apparent from the API surface.
 
-1. **`ctx.with_guest_memory_mut(name, |slice| { ... })`** — zero-copy
-   scratch-buffer elimination for the read/write/gather handlers. Same shape
-   as raw's own `fast_read`/`fast_write` but through the safe wasmos surface.
-2. **`CoreImports::register_static<F>(F)`** — monomorphized dispatch, one
-   fn pointer per registration instead of the `Arc<dyn CoreImportFn>` vtable
-   hop.
+For a raw `tvm.alloc` call (~46ns wasmtime-native), that's a 20× regression.
+For a 16KB `tvm.write` call (~217ns wasmtime-native), 7×. For a call that
+does 100μs of real work, <1% — portable and fine.
 
-Session 1 lands memcpy + `Arc<dyn>` throughout. Phase 6.9.b benchmarks
-measure the delta; if it matters for a specific hot handler, the switch
-above is a small diff.
+**See `docs/wasmos-overhead.md` for the full numbers table + optimization
+escape hatches.** Short version: if you're doing hot-loop
+call-per-element with tiny work, stay on `raw_linker`. If you need
+portability across adapters and can spend an extra microsecond per call,
+`raw_linker_wasmos` is the shape.
 
 ### What's covered
 
