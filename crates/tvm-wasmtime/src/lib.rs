@@ -54,6 +54,12 @@ pub mod raw_linker_wasmos;
 pub mod region_view;
 pub mod runtime_persist;
 pub mod shared_host;
+// ADR-0029 Phase 6.9 D2 Session 2 — wasmos-native mirror types for
+// the tvm:memory@0.1.0/types interface. Additive; the existing
+// `bindings` module + Host trait impls on TvmHost stay in place.
+// Session 3 will consume these mirrors from #[host_iface(sync)]
+// structs for the manager/bytes/diagnostics interfaces.
+pub mod wasmos_bindings;
 
 pub use builder::TvmBuilder;
 pub use concurrent_host::ConcurrentTvmHost;
