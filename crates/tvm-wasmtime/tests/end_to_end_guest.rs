@@ -1,3 +1,5 @@
+#![allow(deprecated)] // ADR-0029 Phase 6.9 D2 Session 5 — this test intentionally exercises the deprecated wit-bindgen linker::add_*_to_linker family to guard the reference implementation while it coexists with wasmos_bindings::install_tvm_imports_*.
+
 //! End-to-end test: build the `tvm-guest-demo` crate to wasm32-unknown-unknown,
 //! wrap the core module as a component, instantiate against the TvmHost
 //! linker, and call its exported `run-test` function.

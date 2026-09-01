@@ -16,6 +16,8 @@ pub use crate::host::TvmHost;
 pub use crate::imported::{
     build_imported_setup, build_imported_setup_with_data, create_imported_in_store, ImportedRegion,
 };
+// Phase 6.9 D2 Session 5: deprecated at definition; see lib.rs.
+#[allow(deprecated)]
 pub use crate::linker::{
     add_concurrent_to_linker, add_shared_to_linker, add_to_linker, add_to_linker_with,
 };

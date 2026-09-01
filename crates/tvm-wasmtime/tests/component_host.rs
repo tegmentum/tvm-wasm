@@ -1,3 +1,5 @@
+#![allow(deprecated)] // ADR-0029 Phase 6.9 D2 Session 5 — this test intentionally exercises the deprecated wit-bindgen linker::add_*_to_linker family to guard the reference implementation while it coexists with wasmos_bindings::install_tvm_imports_*.
+
 use tempfile::tempdir;
 use tvm_core::AllocatorKind;
 use tvm_wasmtime::bindings::tvm::memory::bytes::Host as BytesHost;

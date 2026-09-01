@@ -68,6 +68,11 @@ pub use host::TvmHost;
 pub use imported::{
     build_imported_setup, build_imported_setup_with_data, create_imported_in_store, ImportedRegion,
 };
+// ADR-0029 Phase 6.9 D2 Session 5: the wit-bindgen linker entries
+// are marked `#[deprecated]` at their definitions; #[allow(deprecated)]
+// here so re-export doesn't emit an in-crate warning. Deprecation
+// still fires at every consumer call site outside the crate.
+#[allow(deprecated)]
 pub use linker::{
     add_concurrent_to_linker, add_per_actor_to_linker, add_shared_to_linker, add_to_linker,
     add_to_linker_with,

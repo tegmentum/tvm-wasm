@@ -128,6 +128,14 @@ impl TvmBuilder {
         let store = Store::new(&engine, host);
         let mut linker = wasmtime::component::Linker::<TvmHost>::new(&engine);
         if self.register_wit {
+            // Phase 6.9 D2 Session 5: TvmBuilder's wit-bindgen
+            // finisher is the sibling of the wasmos finisher
+            // (`for_wasmos()`); the deprecation on add_to_linker
+            // doesn't change what this method returns. Consumers
+            // wanting to migrate off this whole builder branch
+            // should use TvmBuilder::for_wasmos() (Phase 6.9.d
+            // Session 1).
+            #[allow(deprecated)]
             crate::linker::add_to_linker(&mut linker)?;
         }
         Ok((engine, store, linker))
