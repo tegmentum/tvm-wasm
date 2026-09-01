@@ -40,6 +40,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use tvm_core::{Handle, TvmError};
+
+use crate::TvmHost;
 use wasmos_runtime_api::{
     CoreImportContext, CoreImportFn, CoreImports, CoreValue, RuntimeError, RuntimeResult,
 };
@@ -49,6 +51,103 @@ use crate::raw_linker::{
     ERR_REGION_NOT_FOUND, ERR_STALE_HANDLE,
 };
 use crate::shared_host::SharedTvmHost;
+
+/// ADR-0029 Phase 6.9.d Session 5 — abstract over "where the
+/// `TvmHost` lives" so the same 26 handler types work under two
+/// concurrency models:
+///
+/// - [`TvmHostSource::Shared`]: caller closes a [`SharedTvmHost`]
+///   into every handler at register time. Matches the original
+///   Phase 6.9.a shape; hosts one Arc-clone of the TvmHost, taken
+///   under a mutex per call.
+///
+/// - [`TvmHostSource::PerActor`]: caller uses the
+///   `wasmos-runtime-wasmtime-v48::core_import_bridge::
+///   install_core_imports` bridge to install this composite on a
+///   wasmtime [`Linker`](wasmtime::Linker) whose store data type
+///   IS `TvmHost` (or `AsMut<TvmHost>` after a wrapper — girder's
+///   `RawTvmActorInstance` shape). Handlers pull `&mut TvmHost`
+///   via [`CoreImportContext::consumer_state`] — the wasmos
+///   equivalent of the wit-bindgen `caller.data_mut().as_mut()`
+///   pattern in the old [`crate::raw_linker::add_raw_imports`].
+///   No mutex is taken: the store's exclusive access to its own
+///   data is the concurrency contract.
+///
+/// # Enum instead of trait object
+///
+/// Kept as a two-variant enum rather than `Box<dyn HostAccess>` for
+/// two reasons: (a) the two variants are the entire universe today
+/// (no third caller shape is on the horizon), and (b) enum matching
+/// stays branch-predictor-friendly on the hot path.
+#[derive(Clone)]
+pub(crate) enum TvmHostSource {
+    /// Handler owns an `Arc<Mutex<TvmHost>>` clone; locks per call.
+    Shared(SharedTvmHost),
+    /// Handler pulls `&mut TvmHost` from
+    /// [`CoreImportContext::consumer_state`] on each call.
+    PerActor,
+}
+
+impl TvmHostSource {
+    /// Return a guard that dereferences to `&mut TvmHost`. Named
+    /// [`Self::lock`] to mirror [`SharedTvmHost::lock`] so the 26
+    /// handler bodies stay uniform across variants — each simply
+    /// says `let mut g = self.host.lock(ctx)?; let host = &mut *g;`.
+    ///
+    /// - [`Self::Shared`]: locks the mutex and wraps the
+    ///   [`MutexGuard`](std::sync::MutexGuard).
+    /// - [`Self::PerActor`]: downcasts `ctx.consumer_state::
+    ///   <TvmHost>()` and wraps the resulting `&mut TvmHost`. Errors
+    ///   when the slot is empty or the wrong type — that means the
+    ///   `PerActor` variant was installed against a store whose data
+    ///   isn't the expected `TvmHost`.
+    fn lock<'a>(
+        &'a self,
+        ctx: &'a mut CoreImportContext<'_>,
+    ) -> RuntimeResult<TvmHostGuard<'a>> {
+        match self {
+            TvmHostSource::Shared(shared) => Ok(TvmHostGuard::Shared(shared.lock())),
+            TvmHostSource::PerActor => {
+                let host = ctx.consumer_state::<TvmHost>().ok_or_else(|| {
+                    RuntimeError::msg(
+                        "raw_linker_wasmos::TvmHostSource::PerActor: no `TvmHost` in \
+                         `ctx.consumer_state`. Install this composite via \
+                         `wasmos-runtime-wasmtime-v48::core_import_bridge::install_core_imports` \
+                         on a `wasmtime::Linker<TvmHost>` so the bridge populates the \
+                         consumer-state slot.",
+                    )
+                })?;
+                Ok(TvmHostGuard::PerActor(host))
+            }
+        }
+    }
+}
+
+/// Deref-through wrapper. Handlers see `&mut TvmHost` regardless of
+/// whether the source is a shared mutex or a per-actor store slot.
+enum TvmHostGuard<'a> {
+    Shared(std::sync::MutexGuard<'a, TvmHost>),
+    PerActor(&'a mut TvmHost),
+}
+
+impl std::ops::Deref for TvmHostGuard<'_> {
+    type Target = TvmHost;
+    fn deref(&self) -> &TvmHost {
+        match self {
+            TvmHostGuard::Shared(g) => &*g,
+            TvmHostGuard::PerActor(h) => &**h,
+        }
+    }
+}
+
+impl std::ops::DerefMut for TvmHostGuard<'_> {
+    fn deref_mut(&mut self) -> &mut TvmHost {
+        match self {
+            TvmHostGuard::Shared(g) => &mut *g,
+            TvmHostGuard::PerActor(h) => &mut **h,
+        }
+    }
+}
 
 // Re-export error codes so consumers can `use tvm_wasmtime::raw_linker_wasmos::*`
 // and get the full public surface — mirrors the raw_linker module.
@@ -119,20 +218,20 @@ fn expect_arity(name: &'static str, args: &[CoreValue], expected: usize) -> Runt
 // ────────────────────────────────────────────────────────────────────
 
 struct TvmAlloc {
-    host: SharedTvmHost,
+    host: TvmHostSource,
 }
 
 #[async_trait]
 impl CoreImportFn for TvmAlloc {
     async fn call(
         &self,
-        _ctx: &mut CoreImportContext<'_>,
+        ctx: &mut CoreImportContext<'_>,
         args: Vec<CoreValue>,
     ) -> RuntimeResult<Vec<CoreValue>> {
         expect_arity("alloc", &args, 2)?;
         let region_id = arg_i32("alloc", &args, 0)?;
         let size = arg_i32("alloc", &args, 1)?;
-        let mut g = self.host.lock();
+        let mut g = self.host.lock(ctx)?;
         let host = &mut *g;
         let ret = match host.directory.alloc(region_id as u16, size as u32) {
             Ok(h) => {
@@ -149,20 +248,20 @@ impl CoreImportFn for TvmAlloc {
 }
 
 struct TvmDealloc {
-    host: SharedTvmHost,
+    host: TvmHostSource,
 }
 
 #[async_trait]
 impl CoreImportFn for TvmDealloc {
     async fn call(
         &self,
-        _ctx: &mut CoreImportContext<'_>,
+        ctx: &mut CoreImportContext<'_>,
         args: Vec<CoreValue>,
     ) -> RuntimeResult<Vec<CoreValue>> {
         expect_arity("dealloc", &args, 1)?;
         let packed = arg_i64("dealloc", &args, 0)?;
         let h = Handle::unpack(packed as u64);
-        let mut g = self.host.lock();
+        let mut g = self.host.lock(ctx)?;
         let ret = match g.directory.dealloc(h) {
             Ok(()) => ERR_OK,
             Err(e) => err_code(&e),
@@ -172,14 +271,14 @@ impl CoreImportFn for TvmDealloc {
 }
 
 struct TvmCopyRegion {
-    host: SharedTvmHost,
+    host: TvmHostSource,
 }
 
 #[async_trait]
 impl CoreImportFn for TvmCopyRegion {
     async fn call(
         &self,
-        _ctx: &mut CoreImportContext<'_>,
+        ctx: &mut CoreImportContext<'_>,
         args: Vec<CoreValue>,
     ) -> RuntimeResult<Vec<CoreValue>> {
         expect_arity("copy_region", &args, 5)?;
@@ -188,7 +287,7 @@ impl CoreImportFn for TvmCopyRegion {
         let dst_region = arg_i32("copy_region", &args, 2)?;
         let dst_off = arg_i32("copy_region", &args, 3)?;
         let len = arg_i32("copy_region", &args, 4)?;
-        let mut g = self.host.lock();
+        let mut g = self.host.lock(ctx)?;
         let ret = match g.directory.cross_region_copy(
             src_region as u16,
             src_off as u32,
@@ -204,18 +303,18 @@ impl CoreImportFn for TvmCopyRegion {
 }
 
 struct TvmLastError {
-    host: SharedTvmHost,
+    host: TvmHostSource,
 }
 
 #[async_trait]
 impl CoreImportFn for TvmLastError {
     async fn call(
         &self,
-        _ctx: &mut CoreImportContext<'_>,
+        ctx: &mut CoreImportContext<'_>,
         args: Vec<CoreValue>,
     ) -> RuntimeResult<Vec<CoreValue>> {
         expect_arity("last_error", &args, 0)?;
-        let mut g = self.host.lock();
+        let mut g = self.host.lock(ctx)?;
         let ret = std::mem::replace(&mut g.last_raw_error, ERR_OK);
         Ok(vec![CoreValue::I32(ret)])
     }
@@ -229,20 +328,20 @@ impl CoreImportFn for TvmLastError {
 macro_rules! reducer_i64_neg1 {
     ($ty:ident, $wire_name:literal, $call:ident) => {
         struct $ty {
-            host: SharedTvmHost,
+            host: TvmHostSource,
         }
         #[async_trait]
         impl CoreImportFn for $ty {
             async fn call(
                 &self,
-                _ctx: &mut CoreImportContext<'_>,
+                ctx: &mut CoreImportContext<'_>,
                 args: Vec<CoreValue>,
             ) -> RuntimeResult<Vec<CoreValue>> {
                 expect_arity($wire_name, &args, 2)?;
                 let packed = arg_i64($wire_name, &args, 0)?;
                 let len = arg_i32($wire_name, &args, 1)?;
                 let h = Handle::unpack(packed as u64);
-                let mut g = self.host.lock();
+                let mut g = self.host.lock(ctx)?;
                 let host = &mut *g;
                 let ret = match host.$call(h, len as u32) {
                     Ok(v) => v as i64,
@@ -261,20 +360,20 @@ macro_rules! reducer_i64_neg1 {
 macro_rules! reducer_i32_neg1 {
     ($ty:ident, $wire_name:literal, $call:ident, $ok:ident => $ok_expr:expr) => {
         struct $ty {
-            host: SharedTvmHost,
+            host: TvmHostSource,
         }
         #[async_trait]
         impl CoreImportFn for $ty {
             async fn call(
                 &self,
-                _ctx: &mut CoreImportContext<'_>,
+                ctx: &mut CoreImportContext<'_>,
                 args: Vec<CoreValue>,
             ) -> RuntimeResult<Vec<CoreValue>> {
                 expect_arity($wire_name, &args, 2)?;
                 let packed = arg_i64($wire_name, &args, 0)?;
                 let len = arg_i32($wire_name, &args, 1)?;
                 let h = Handle::unpack(packed as u64);
-                let mut g = self.host.lock();
+                let mut g = self.host.lock(ctx)?;
                 let host = &mut *g;
                 let ret: i32 = match host.$call(h, len as u32) {
                     Ok($ok) => $ok_expr,
@@ -298,21 +397,21 @@ reducer_i32_neg1!(TvmXorFoldU8, "xor_fold_u8", region_xor_fold_u8, v => v as i32
 
 /// hash_fnv1a returns i64; on err sets last_raw_error and returns 0.
 struct TvmHashFnv1a {
-    host: SharedTvmHost,
+    host: TvmHostSource,
 }
 
 #[async_trait]
 impl CoreImportFn for TvmHashFnv1a {
     async fn call(
         &self,
-        _ctx: &mut CoreImportContext<'_>,
+        ctx: &mut CoreImportContext<'_>,
         args: Vec<CoreValue>,
     ) -> RuntimeResult<Vec<CoreValue>> {
         expect_arity("hash_fnv1a", &args, 2)?;
         let packed = arg_i64("hash_fnv1a", &args, 0)?;
         let len = arg_i32("hash_fnv1a", &args, 1)?;
         let h = Handle::unpack(packed as u64);
-        let mut g = self.host.lock();
+        let mut g = self.host.lock(ctx)?;
         let host = &mut *g;
         let ret = match host.region_hash_fnv1a(h, len as u32) {
             Ok(v) => v as i64,
@@ -326,14 +425,14 @@ impl CoreImportFn for TvmHashFnv1a {
 }
 
 struct TvmFindByte {
-    host: SharedTvmHost,
+    host: TvmHostSource,
 }
 
 #[async_trait]
 impl CoreImportFn for TvmFindByte {
     async fn call(
         &self,
-        _ctx: &mut CoreImportContext<'_>,
+        ctx: &mut CoreImportContext<'_>,
         args: Vec<CoreValue>,
     ) -> RuntimeResult<Vec<CoreValue>> {
         expect_arity("find_byte", &args, 3)?;
@@ -341,7 +440,7 @@ impl CoreImportFn for TvmFindByte {
         let len = arg_i32("find_byte", &args, 1)?;
         let byte = arg_i32("find_byte", &args, 2)?;
         let h = Handle::unpack(packed as u64);
-        let mut g = self.host.lock();
+        let mut g = self.host.lock(ctx)?;
         let host = &mut *g;
         let ret: i32 = match host.region_find_byte(h, len as u32, byte as u8) {
             Ok(Some(off)) => off as i32,
@@ -356,14 +455,14 @@ impl CoreImportFn for TvmFindByte {
 }
 
 struct TvmCountByte {
-    host: SharedTvmHost,
+    host: TvmHostSource,
 }
 
 #[async_trait]
 impl CoreImportFn for TvmCountByte {
     async fn call(
         &self,
-        _ctx: &mut CoreImportContext<'_>,
+        ctx: &mut CoreImportContext<'_>,
         args: Vec<CoreValue>,
     ) -> RuntimeResult<Vec<CoreValue>> {
         expect_arity("count_byte", &args, 3)?;
@@ -371,7 +470,7 @@ impl CoreImportFn for TvmCountByte {
         let len = arg_i32("count_byte", &args, 1)?;
         let byte = arg_i32("count_byte", &args, 2)?;
         let h = Handle::unpack(packed as u64);
-        let mut g = self.host.lock();
+        let mut g = self.host.lock(ctx)?;
         let host = &mut *g;
         let ret: i32 = match host.region_count_byte(h, len as u32, byte as u8) {
             Ok(c) => c as i32,
@@ -385,14 +484,14 @@ impl CoreImportFn for TvmCountByte {
 }
 
 struct TvmEq {
-    host: SharedTvmHost,
+    host: TvmHostSource,
 }
 
 #[async_trait]
 impl CoreImportFn for TvmEq {
     async fn call(
         &self,
-        _ctx: &mut CoreImportContext<'_>,
+        ctx: &mut CoreImportContext<'_>,
         args: Vec<CoreValue>,
     ) -> RuntimeResult<Vec<CoreValue>> {
         expect_arity("eq", &args, 3)?;
@@ -401,7 +500,7 @@ impl CoreImportFn for TvmEq {
         let len = arg_i32("eq", &args, 2)?;
         let ha = Handle::unpack(packed_a as u64);
         let hb = Handle::unpack(packed_b as u64);
-        let mut g = self.host.lock();
+        let mut g = self.host.lock(ctx)?;
         let host = &mut *g;
         let ret: i32 = match host.region_eq(ha, hb, len as u32) {
             Ok(true) => 1,
@@ -416,21 +515,21 @@ impl CoreImportFn for TvmEq {
 }
 
 struct TvmMinMaxU8 {
-    host: SharedTvmHost,
+    host: TvmHostSource,
 }
 
 #[async_trait]
 impl CoreImportFn for TvmMinMaxU8 {
     async fn call(
         &self,
-        _ctx: &mut CoreImportContext<'_>,
+        ctx: &mut CoreImportContext<'_>,
         args: Vec<CoreValue>,
     ) -> RuntimeResult<Vec<CoreValue>> {
         expect_arity("min_max_u8", &args, 2)?;
         let packed = arg_i64("min_max_u8", &args, 0)?;
         let len = arg_i32("min_max_u8", &args, 1)?;
         let h = Handle::unpack(packed as u64);
-        let mut g = self.host.lock();
+        let mut g = self.host.lock(ctx)?;
         let host = &mut *g;
         let ret: i32 = match host.region_min_max_u8(h, len as u32) {
             Ok((lo, hi)) => ((lo as i32) << 8) | (hi as i32),
@@ -444,14 +543,14 @@ impl CoreImportFn for TvmMinMaxU8 {
 }
 
 struct TvmXorIntoRegion {
-    host: SharedTvmHost,
+    host: TvmHostSource,
 }
 
 #[async_trait]
 impl CoreImportFn for TvmXorIntoRegion {
     async fn call(
         &self,
-        _ctx: &mut CoreImportContext<'_>,
+        ctx: &mut CoreImportContext<'_>,
         args: Vec<CoreValue>,
     ) -> RuntimeResult<Vec<CoreValue>> {
         expect_arity("xor_into_region", &args, 3)?;
@@ -460,7 +559,7 @@ impl CoreImportFn for TvmXorIntoRegion {
         let len = arg_i32("xor_into_region", &args, 2)?;
         let src = Handle::unpack(packed_src as u64);
         let dst = Handle::unpack(packed_dst as u64);
-        let mut g = self.host.lock();
+        let mut g = self.host.lock(ctx)?;
         let host = &mut *g;
         let ret: i32 = match host.region_xor_into_region(src, dst, len as u32) {
             Ok(()) => ERR_OK,
@@ -471,21 +570,21 @@ impl CoreImportFn for TvmXorIntoRegion {
 }
 
 struct TvmSumU32Le {
-    host: SharedTvmHost,
+    host: TvmHostSource,
 }
 
 #[async_trait]
 impl CoreImportFn for TvmSumU32Le {
     async fn call(
         &self,
-        _ctx: &mut CoreImportContext<'_>,
+        ctx: &mut CoreImportContext<'_>,
         args: Vec<CoreValue>,
     ) -> RuntimeResult<Vec<CoreValue>> {
         expect_arity("sum_u32_le", &args, 2)?;
         let packed = arg_i64("sum_u32_le", &args, 0)?;
         let len = arg_i32("sum_u32_le", &args, 1)?;
         let h = Handle::unpack(packed as u64);
-        let mut g = self.host.lock();
+        let mut g = self.host.lock(ctx)?;
         let host = &mut *g;
         let ret: i64 = match host.region_sum_u32_le(h, len as u32) {
             Ok(s) if s <= i64::MAX as u128 => s as i64,
@@ -503,21 +602,21 @@ impl CoreImportFn for TvmSumU32Le {
 }
 
 struct TvmMaxU32Le {
-    host: SharedTvmHost,
+    host: TvmHostSource,
 }
 
 #[async_trait]
 impl CoreImportFn for TvmMaxU32Le {
     async fn call(
         &self,
-        _ctx: &mut CoreImportContext<'_>,
+        ctx: &mut CoreImportContext<'_>,
         args: Vec<CoreValue>,
     ) -> RuntimeResult<Vec<CoreValue>> {
         expect_arity("max_u32_le", &args, 2)?;
         let packed = arg_i64("max_u32_le", &args, 0)?;
         let len = arg_i32("max_u32_le", &args, 1)?;
         let h = Handle::unpack(packed as u64);
-        let mut g = self.host.lock();
+        let mut g = self.host.lock(ctx)?;
         let host = &mut *g;
         let ret: i64 = match host.region_max_u32_le(h, len as u32) {
             Ok(Some(v)) => v as i64,
@@ -532,14 +631,14 @@ impl CoreImportFn for TvmMaxU32Le {
 }
 
 struct TvmCountInRange {
-    host: SharedTvmHost,
+    host: TvmHostSource,
 }
 
 #[async_trait]
 impl CoreImportFn for TvmCountInRange {
     async fn call(
         &self,
-        _ctx: &mut CoreImportContext<'_>,
+        ctx: &mut CoreImportContext<'_>,
         args: Vec<CoreValue>,
     ) -> RuntimeResult<Vec<CoreValue>> {
         expect_arity("count_in_range", &args, 4)?;
@@ -548,7 +647,7 @@ impl CoreImportFn for TvmCountInRange {
         let lo = arg_i32("count_in_range", &args, 2)?;
         let hi = arg_i32("count_in_range", &args, 3)?;
         let h = Handle::unpack(packed as u64);
-        let mut g = self.host.lock();
+        let mut g = self.host.lock(ctx)?;
         let host = &mut *g;
         let ret: i32 = match host.region_count_in_range(h, len as u32, lo as u8, hi as u8) {
             Ok(c) => c as i32,
@@ -562,14 +661,14 @@ impl CoreImportFn for TvmCountInRange {
 }
 
 struct TvmLexCmp {
-    host: SharedTvmHost,
+    host: TvmHostSource,
 }
 
 #[async_trait]
 impl CoreImportFn for TvmLexCmp {
     async fn call(
         &self,
-        _ctx: &mut CoreImportContext<'_>,
+        ctx: &mut CoreImportContext<'_>,
         args: Vec<CoreValue>,
     ) -> RuntimeResult<Vec<CoreValue>> {
         expect_arity("lex_cmp", &args, 3)?;
@@ -578,7 +677,7 @@ impl CoreImportFn for TvmLexCmp {
         let len = arg_i32("lex_cmp", &args, 2)?;
         let ha = Handle::unpack(packed_a as u64);
         let hb = Handle::unpack(packed_b as u64);
-        let mut g = self.host.lock();
+        let mut g = self.host.lock(ctx)?;
         let host = &mut *g;
         let ret: i32 = match host.region_lex_cmp(ha, hb, len as u32) {
             Ok(core::cmp::Ordering::Less) => -1,
@@ -594,14 +693,14 @@ impl CoreImportFn for TvmLexCmp {
 }
 
 struct TvmFill {
-    host: SharedTvmHost,
+    host: TvmHostSource,
 }
 
 #[async_trait]
 impl CoreImportFn for TvmFill {
     async fn call(
         &self,
-        _ctx: &mut CoreImportContext<'_>,
+        ctx: &mut CoreImportContext<'_>,
         args: Vec<CoreValue>,
     ) -> RuntimeResult<Vec<CoreValue>> {
         expect_arity("fill", &args, 3)?;
@@ -609,7 +708,7 @@ impl CoreImportFn for TvmFill {
         let len = arg_i32("fill", &args, 1)?;
         let byte = arg_i32("fill", &args, 2)?;
         let h = Handle::unpack(packed as u64);
-        let mut g = self.host.lock();
+        let mut g = self.host.lock(ctx)?;
         let ret: i32 = match g.region_fill(h, len as u32, byte as u8) {
             Ok(()) => ERR_OK,
             Err(e) => err_code(&e),
@@ -619,14 +718,14 @@ impl CoreImportFn for TvmFill {
 }
 
 struct TvmXorWithByte {
-    host: SharedTvmHost,
+    host: TvmHostSource,
 }
 
 #[async_trait]
 impl CoreImportFn for TvmXorWithByte {
     async fn call(
         &self,
-        _ctx: &mut CoreImportContext<'_>,
+        ctx: &mut CoreImportContext<'_>,
         args: Vec<CoreValue>,
     ) -> RuntimeResult<Vec<CoreValue>> {
         expect_arity("xor_with_byte", &args, 3)?;
@@ -634,7 +733,7 @@ impl CoreImportFn for TvmXorWithByte {
         let len = arg_i32("xor_with_byte", &args, 1)?;
         let byte = arg_i32("xor_with_byte", &args, 2)?;
         let h = Handle::unpack(packed as u64);
-        let mut g = self.host.lock();
+        let mut g = self.host.lock(ctx)?;
         let ret: i32 = match g.region_xor_with_byte(h, len as u32, byte as u8) {
             Ok(()) => ERR_OK,
             Err(e) => err_code(&e),
@@ -651,7 +750,7 @@ impl CoreImportFn for TvmXorWithByte {
 
 /// tvm.read: read `len` bytes from region into guest memory at `dst_ptr`.
 struct TvmRead {
-    host: SharedTvmHost,
+    host: TvmHostSource,
     memory_name: &'static str,
 }
 
@@ -671,7 +770,7 @@ impl CoreImportFn for TvmRead {
         // Read region into scratch, then copy scratch to guest memory.
         let mut scratch = vec![0u8; len_us];
         {
-            let mut g = self.host.lock();
+            let mut g = self.host.lock(ctx)?;
             let host = &mut *g;
             if let Err(e) = host.directory.read(h, &mut scratch) {
                 host.last_raw_error = err_code(&e);
@@ -690,7 +789,7 @@ impl CoreImportFn for TvmRead {
 
 /// tvm.write: read `len` bytes from guest memory at `src_ptr` and write to region.
 struct TvmWrite {
-    host: SharedTvmHost,
+    host: TvmHostSource,
     memory_name: &'static str,
 }
 
@@ -714,7 +813,7 @@ impl CoreImportFn for TvmWrite {
         {
             return Ok(vec![CoreValue::I32(ERR_GUEST_MEMORY)]);
         }
-        let mut g = self.host.lock();
+        let mut g = self.host.lock(ctx)?;
         let host = &mut *g;
         let ret: i32 = match host.directory.write(h, &scratch) {
             Ok(()) => ERR_OK,
@@ -731,7 +830,7 @@ impl CoreImportFn for TvmWrite {
 /// Indices live in guest memory at `indices_ptr` (LE u32s). Results are
 /// concatenated into guest memory at `dst_ptr`.
 struct TvmReadGather {
-    host: SharedTvmHost,
+    host: TvmHostSource,
     memory_name: &'static str,
 }
 
@@ -782,7 +881,7 @@ impl CoreImportFn for TvmReadGather {
 
         let mut scratch = vec![0u8; count_us * item];
         {
-            let mut g = self.host.lock();
+            let mut g = self.host.lock(ctx)?;
             let host = &mut *g;
             if dense_contiguous && count_us > 0 {
                 let cell = Handle {
@@ -821,7 +920,7 @@ impl CoreImportFn for TvmReadGather {
 
 /// tvm.index_of: search `region[..len]` for `needle` (living in guest memory).
 struct TvmIndexOf {
-    host: SharedTvmHost,
+    host: TvmHostSource,
     memory_name: &'static str,
 }
 
@@ -849,7 +948,7 @@ impl CoreImportFn for TvmIndexOf {
         {
             return Ok(vec![CoreValue::I32(ERR_GUEST_MEMORY)]);
         }
-        let mut g = self.host.lock();
+        let mut g = self.host.lock(ctx)?;
         let host = &mut *g;
         let ret: i32 = match host.region_index_of(h, len as u32, &needle) {
             Ok(Some(off)) => off as i32,
@@ -866,7 +965,7 @@ impl CoreImportFn for TvmIndexOf {
 /// tvm.byte_histogram: compute 256-bucket u8 histogram (LE u32 per bucket)
 /// over region and write 1024-byte result to guest memory at `out_ptr`.
 struct TvmByteHistogram {
-    host: SharedTvmHost,
+    host: TvmHostSource,
     memory_name: &'static str,
 }
 
@@ -884,7 +983,7 @@ impl CoreImportFn for TvmByteHistogram {
         let h = Handle::unpack(packed as u64);
         let mut buf = [0u8; 1024];
         {
-            let mut g = self.host.lock();
+            let mut g = self.host.lock(ctx)?;
             let host = &mut *g;
             if let Err(e) = host.region_byte_histogram(h, len as u32, &mut buf) {
                 return Ok(vec![CoreValue::I32(err_code(&e))]);
@@ -924,6 +1023,53 @@ pub fn add_raw_imports(imports: CoreImports, host: SharedTvmHost) -> CoreImports
 pub fn add_raw_imports_with_memory_name(
     imports: CoreImports,
     host: SharedTvmHost,
+    memory_name: &'static str,
+) -> CoreImports {
+    register_all(imports, TvmHostSource::Shared(host), memory_name)
+}
+
+/// ADR-0029 Phase 6.9.d Session 5 — per-actor peer of
+/// [`add_raw_imports`]. Handlers pull `&mut TvmHost` from
+/// [`CoreImportContext::consumer_state`] on each call rather than
+/// closing an `Arc<Mutex<TvmHost>>` clone at register time.
+///
+/// # Wiring contract
+///
+/// The composite returned here MUST be installed via
+/// `wasmos-runtime-wasmtime-v48::core_import_bridge::install_core_imports`
+/// (or its edge sibling) on a `wasmtime::Linker<TvmHost>`. The
+/// bridge populates the ctx's `consumer_state` slot with
+/// `caller.data_mut()` per call — the wasmos equivalent of the
+/// wit-bindgen `caller.data_mut().as_mut::<TvmHost>()` pattern.
+///
+/// # When to prefer this over the shared entry point
+///
+/// - The consumer's Wasm actor already stores its `TvmHost` in
+///   the wasmtime `Store` data (per-actor concurrency model — no
+///   sharing across actors). This is girder's
+///   `RawTvmActorInstance` shape.
+/// - You want to avoid the per-call `SharedTvmHost::lock()` mutex
+///   under a workload that's exclusively single-actor.
+///
+/// Under the shared model, prefer [`add_raw_imports`] /
+/// [`add_raw_shared`] — no ctx contract to satisfy.
+pub fn add_raw_imports_per_actor(imports: CoreImports) -> CoreImports {
+    add_raw_imports_per_actor_with_memory_name(imports, "memory")
+}
+
+/// Custom-memory-name variant of [`add_raw_imports_per_actor`].
+pub fn add_raw_imports_per_actor_with_memory_name(
+    imports: CoreImports,
+    memory_name: &'static str,
+) -> CoreImports {
+    register_all(imports, TvmHostSource::PerActor, memory_name)
+}
+
+/// Private common registrar — every public entry point delegates
+/// here after packaging the host into a [`TvmHostSource`].
+fn register_all(
+    imports: CoreImports,
+    host: TvmHostSource,
     memory_name: &'static str,
 ) -> CoreImports {
     imports
