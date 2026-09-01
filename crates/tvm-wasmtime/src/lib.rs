@@ -68,6 +68,11 @@ pub use linker::{
 };
 pub use memory_factory::{RuntimeMemoryRegion, WasmtimeMemoryRegion, WASM_PAGE_SIZE};
 pub use per_actor::{PerActorTvmHost, TvmBudget};
+// ADR-0029 Phase 6.9.d Session 7: the wit-bindgen raw entry points
+// are marked `#[deprecated]` at their definitions; #[allow(deprecated)]
+// here so re-export doesn't emit an in-crate warning. The deprecation
+// still fires at every consumer call site.
+#[allow(deprecated)]
 pub use raw_linker::{
     add_raw_imports, add_raw_imports_with_memory_name, add_raw_shared,
     add_raw_shared_with_memory_name,

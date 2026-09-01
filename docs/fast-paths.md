@@ -226,11 +226,20 @@ double-copy.
 
 ---
 
-## The wasmos raw path (Phase 6.9.a)
+## The wasmos raw path (Phase 6.9.a; wit-bindgen deprecated at Phase 6.9.d Session 7)
 
 The raw path historically lived on wasmtime — `add_raw_imports` takes a
 `wasmtime::Linker<T>` where `T: AsMut<TvmHost>`. That works well when your
 whole pipeline is wasmtime-based, but locks the raw path to one engine.
+
+**As of 2026-09-01 (Phase 6.9.d Session 7),** the wasmtime-native
+`add_raw_imports` / `add_raw_shared` entries are marked `#[deprecated]`.
+No production consumer remains: girder-wasmtime — the last downstream
+consumer — migrated both raw-tvm actor variants to `raw_linker_wasmos`
+at Phase 6.9.d Sessions 3 (shared) + 6 (per-actor). The wit-bindgen path
+stays available (behind `#[allow(deprecated)]`) for internal reference
+testing and the `wasmos_overhead` head-to-head bench; new work should
+use the wasmos path documented below.
 
 Since ADR-0029, a second raw path lives alongside the wasmtime one, sitting
 on the wasmos runtime-abstraction layer. It's in
@@ -267,10 +276,11 @@ two batches (see the module docstring for why).
 
 | Situation | Path |
 |---|---|
-| Wasmtime-only pipeline, single-threaded, perf-critical | wasmtime `raw_linker` (unchanged) |
+| Any new consumer (default) | `raw_linker_wasmos` — the wit-bindgen entries are `#[deprecated]` |
+| Measured hot-loop win from skipping the wasmos overhead | wasmtime `raw_linker` behind an in-file `#![allow(deprecated)]`, with a comment citing the measured wall-clock gap |
 | Multi-runtime dispatch (wasmtime + WAMR) or planning to portability-test | `raw_linker_wasmos` |
-| Cross-store sharing (multiple actors, one region directory) | either, but `raw_linker_wasmos` handles it uniformly (no per-Store cache to invalidate) |
-| Benchmarking wasmos-overhead vs wasmtime-native | run both paths side-by-side; the crate exports both |
+| Cross-store sharing (multiple actors, one region directory) | `raw_linker_wasmos::add_raw_shared(imports, SharedTvmHost)` |
+| Benchmarking wasmos-overhead vs wasmtime-native | run both paths side-by-side; the crate exports both (see `wasmos_overhead` bench) |
 
 ### Perf cost of the wasmos path
 

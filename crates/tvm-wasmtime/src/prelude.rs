@@ -20,5 +20,8 @@ pub use crate::linker::{
     add_concurrent_to_linker, add_shared_to_linker, add_to_linker, add_to_linker_with,
 };
 pub use crate::macros::tvm_mm_setup;
+// Phase 6.9.d Session 7: deprecated at definition; see lib.rs for
+// the rationale.
+#[allow(deprecated)]
 pub use crate::raw_linker::{add_raw_imports, add_raw_imports_with_memory_name};
 pub use crate::shared_host::SharedTvmHost;

@@ -113,14 +113,47 @@ where
 
 /// Register raw imports under module name `tvm`, expecting the guest's
 /// linear memory to be exported as `memory`.
+///
+/// **Deprecated (ADR-0029 Phase 6.9.d Session 7).** No production
+/// consumer remains — girder-wasmtime's `RawTvmActorInstance` migrated
+/// off this entry to
+/// [`raw_linker_wasmos::add_raw_imports_per_actor_projected`] at Session
+/// 6. Prefer the wasmos-abstraction path for new work: it's portable
+/// across every wasmos-backed runtime (v48 / edge / WAMR) and installs
+/// through `wasmos-runtime-wasmtime-v48::core_import_bridge::
+/// install_core_imports`. Retention here is transitional: the crate's
+/// own tests + benches still exercise this entry to guard the
+/// wasmtime-native reference implementation and let
+/// `benches/wasmos_overhead.rs` continue to publish the head-to-head
+/// numbers (used for consumer perf guidance). A future session may
+/// delete both the entry and its bench once the perf-hot use case is
+/// definitively addressed elsewhere.
+#[deprecated(
+    since = "0.1.1",
+    note = "No production consumer left after ADR-0029 Phase 6.9.d Session 6. \
+            Use `raw_linker_wasmos::add_raw_imports_per_actor_projected::<T>` + \
+            `wasmos-runtime-wasmtime-v48::core_import_bridge::install_core_imports` \
+            instead. Kept for internal tests + the wasmos-overhead bench."
+)]
 pub fn add_raw_imports<T>(linker: &mut Linker<T>) -> wasmtime::Result<()>
 where
     T: AsMut<TvmHost> + 'static,
 {
+    // Delegate through the deprecated-suppressed inner variant so we
+    // don't self-warn.
+    #[allow(deprecated)]
     add_raw_imports_with_memory_name(linker, "memory")
 }
 
 /// Same as `add_raw_imports`, but uses a custom guest memory export name.
+///
+/// **Deprecated (ADR-0029 Phase 6.9.d Session 7).** See
+/// [`add_raw_imports`] for the migration hint.
+#[deprecated(
+    since = "0.1.1",
+    note = "See `add_raw_imports` — same migration; use \
+            `raw_linker_wasmos::add_raw_imports_per_actor_projected_with_memory_name`."
+)]
 pub fn add_raw_imports_with_memory_name<T>(
     linker: &mut Linker<T>,
     memory_name: &'static str,
@@ -712,14 +745,31 @@ where
 /// shared actors race on `tvm.last_error()` — the per-call `i32`/`i64`
 /// return code remains the primary, correct error channel (this only
 /// affects the secondary `last_error()` convenience).
+#[deprecated(
+    since = "0.1.1",
+    note = "No production consumer left after ADR-0029 Phase 6.9.d Session 3 \
+            (girder-wasmtime SharedRawTvmActorInstance migration). Use \
+            `raw_linker_wasmos::add_raw_shared(imports, SharedTvmHost)` + \
+            `wasmos-runtime-wasmtime-v48::core_import_bridge::install_core_imports` \
+            instead. Kept for internal tests + the wasmos-overhead bench."
+)]
 pub fn add_raw_shared<T>(linker: &mut Linker<T>) -> wasmtime::Result<()>
 where
     T: AsMut<SharedTvmHost> + Send + 'static,
 {
+    #[allow(deprecated)]
     add_raw_shared_with_memory_name(linker, "memory")
 }
 
 /// Same as [`add_raw_shared`], custom guest-memory export name.
+///
+/// **Deprecated (ADR-0029 Phase 6.9.d Session 7).** See
+/// [`add_raw_shared`] for the migration hint.
+#[deprecated(
+    since = "0.1.1",
+    note = "See `add_raw_shared` — same migration; use \
+            `raw_linker_wasmos::add_raw_shared_with_memory_name`."
+)]
 pub fn add_raw_shared_with_memory_name<T>(
     linker: &mut Linker<T>,
     memory_name: &'static str,

@@ -1,3 +1,5 @@
+#![allow(deprecated)] // ADR-0029 Phase 6.9.d Session 7 — this test/bench intentionally exercises the deprecated wit-bindgen raw entry points to guard the reference implementation while it coexists with `raw_linker_wasmos`.
+
 //! ADR-0029 Phase 6.9.b — wasmos-overhead benchmark.
 //!
 //! Compares the wasmtime-native `raw_linker` path against the

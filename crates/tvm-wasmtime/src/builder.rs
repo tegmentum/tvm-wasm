@@ -192,6 +192,14 @@ impl TvmBuilder {
         let store = Store::new(&engine, host);
         let mut linker = Linker::<TvmHost>::new(&engine);
         if self.register_raw {
+            // Deprecated (Phase 6.9.d Session 7) — TvmBuilder's
+            // wit-bindgen-linker finisher is the sibling of the wasmos
+            // finisher (`for_wasmos()`); the deprecation on
+            // `add_raw_imports` doesn't change what this method returns
+            // (still `(Engine, Store, Linker)`). Consumers wanting to
+            // migrate off this whole builder branch should use
+            // `TvmBuilder::for_wasmos()` from Phase 6.9.d Session 1.
+            #[allow(deprecated)]
             crate::raw_linker::add_raw_imports(&mut linker)?;
         }
         Ok((engine, store, linker, self.register_wit))

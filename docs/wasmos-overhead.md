@@ -65,6 +65,16 @@ dominate wall clock. Use `tvm_wasmtime::add_raw_imports` on a
 plain `wasmtime::Linker<T>` and eat the wasmtime coupling. Same
 crate, both paths exported.
 
+**Note (ADR-0029 Phase 6.9.d Session 7, 2026-09-01):**
+`add_raw_imports` / `add_raw_shared` (wit-bindgen path) are marked
+`#[deprecated]` — no production consumer remains (girder-wasmtime's
+raw-tvm actors migrated to `raw_linker_wasmos` at Sessions 3 + 6).
+The wit-bindgen entries stay pending a definitive perf-hot use case,
+and this bench continues to publish the head-to-head numbers so a
+future re-evaluation has data. Applying `#[allow(deprecated)]` at
+call site is the right escape hatch if you're intentionally taking
+the coupling for measured hot-loop wins.
+
 ### Portable / cross-adapter code: use `raw_linker_wasmos`
 
 If you need the same handler surface to work on wasmtime v48,
