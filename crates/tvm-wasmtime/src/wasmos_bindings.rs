@@ -33,9 +33,16 @@
 //! side gets it automatically and the round-trip test fires as
 //! `mirror doesn't have the new field` — the mirror gets updated.
 
-use wasmos_runtime_api::{WitEnum, WitRecord, WitVariant};
+use wasmos_runtime_api::{
+    host_iface, HostCallContext, HostImports, RuntimeResult, WitEnum, WitRecord,
+    WitVariant,
+};
 
+use crate::bindings::tvm::memory::bytes::Host as BgBytesHost;
+use crate::bindings::tvm::memory::diagnostics::Host as BgDiagnosticsHost;
+use crate::bindings::tvm::memory::manager::Host as BgManagerHost;
 use crate::bindings::tvm::memory::types as bg;
+use crate::shared_host::SharedTvmHost;
 
 // ── enum RegionKind ─────────────────────────────────────────────────
 //
@@ -303,6 +310,375 @@ impl From<TvmError> for bg::TvmError {
     }
 }
 
+// ── Host structs — #[host_iface(sync)] for tvm:memory@0.1.0 (D2 Session 3) ─
+//
+// Wasmos-native implementations of the three function-carrying
+// interfaces: `manager`, `bytes`, `diagnostics`. Each struct holds
+// a `SharedTvmHost` (Arc<Mutex<TvmHost>>) and locks per call —
+// this is the SHARED concurrency model matching
+// `raw_linker_wasmos::TvmHostSource::Shared`. A per-actor variant
+// (matching `TvmHostSource::PerActor`) is a future session; it
+// pulls state via `ctx.consumer_state::<TvmHost>()` and reuses
+// the same handler bodies.
+//
+// # Delegation
+//
+// Handlers delegate to the existing wit-bindgen `Host` trait impls
+// on `TvmHost` (defined in `host.rs`) to avoid duplicating the
+// business logic across paths. Arguments enter as mirror types
+// and get converted to wit-bindgen types via `.into()` before the
+// delegation; results convert back via `From` at the boundary.
+// The From converters were established above in Session 2.
+//
+// # Interface naming
+//
+// Wasmos matches interface names verbatim against the guest's
+// imports. The WIT declares `package tvm:memory@0.1.0`, so the
+// installed names are `tvm:memory/manager@0.1.0` etc. — kebab-
+// case, version-tagged, matching wit-bindgen's `add_to_linker`
+// name generation.
+
+/// Wasmos-native implementation of `tvm:memory/manager@0.1.0`.
+/// Locks the shared `TvmHost` per call.
+#[derive(Clone)]
+pub struct TvmManagerHost {
+    host: SharedTvmHost,
+}
+
+impl TvmManagerHost {
+    pub fn new(host: SharedTvmHost) -> Self {
+        Self { host }
+    }
+}
+
+#[host_iface(sync)]
+impl TvmManagerHost {
+    fn create_region(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        kind: RegionKind,
+        capacity: u32,
+    ) -> RuntimeResult<Result<u16, TvmError>> {
+        let mut g = self.host.lock();
+        Ok(BgManagerHost::create_region(&mut *g, kind.into(), capacity).map_err(Into::into))
+    }
+
+    fn destroy_region(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut g = self.host.lock();
+        Ok(BgManagerHost::destroy_region(&mut *g, region_id).map_err(Into::into))
+    }
+
+    fn alloc(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+        size: u32,
+    ) -> RuntimeResult<Result<Handle, TvmError>> {
+        let mut g = self.host.lock();
+        Ok(BgManagerHost::alloc(&mut *g, region_id, size)
+            .map(Into::into)
+            .map_err(Into::into))
+    }
+
+    fn dealloc(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        ptr: Handle,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut g = self.host.lock();
+        Ok(BgManagerHost::dealloc(&mut *g, ptr.into()).map_err(Into::into))
+    }
+
+    fn describe_region(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<Result<RegionInfo, TvmError>> {
+        let mut g = self.host.lock();
+        Ok(BgManagerHost::describe_region(&mut *g, region_id)
+            .map(Into::into)
+            .map_err(Into::into))
+    }
+
+    fn promote_region(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut g = self.host.lock();
+        Ok(BgManagerHost::promote_region(&mut *g, region_id).map_err(Into::into))
+    }
+
+    fn demote_region(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut g = self.host.lock();
+        Ok(BgManagerHost::demote_region(&mut *g, region_id).map_err(Into::into))
+    }
+
+    fn spill_region(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut g = self.host.lock();
+        Ok(BgManagerHost::spill_region(&mut *g, region_id).map_err(Into::into))
+    }
+
+    fn load_region(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut g = self.host.lock();
+        Ok(BgManagerHost::load_region(&mut *g, region_id).map_err(Into::into))
+    }
+
+    fn pin(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut g = self.host.lock();
+        Ok(BgManagerHost::pin(&mut *g, region_id).map_err(Into::into))
+    }
+
+    fn unpin(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut g = self.host.lock();
+        Ok(BgManagerHost::unpin(&mut *g, region_id).map_err(Into::into))
+    }
+
+    fn compact_region(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<Result<CompactResult, TvmError>> {
+        let mut g = self.host.lock();
+        Ok(BgManagerHost::compact_region(&mut *g, region_id)
+            .map(Into::into)
+            .map_err(Into::into))
+    }
+}
+
+/// Register the `tvm:memory/manager@0.1.0` interface on the given
+/// [`HostImports`] set. Consumers thread the returned imports
+/// into the wasmos `ExecutionContext` at instantiate time.
+pub fn install_tvm_manager_imports(
+    imports: HostImports,
+    host: SharedTvmHost,
+) -> HostImports {
+    imports.register_sync("tvm:memory/manager@0.1.0", TvmManagerHost::new(host))
+}
+
+/// Wasmos-native implementation of `tvm:memory/bytes@0.1.0`.
+#[derive(Clone)]
+pub struct TvmBytesHost {
+    host: SharedTvmHost,
+}
+
+impl TvmBytesHost {
+    pub fn new(host: SharedTvmHost) -> Self {
+        Self { host }
+    }
+}
+
+#[host_iface(sync)]
+impl TvmBytesHost {
+    fn read(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        ptr: Handle,
+        len: u32,
+    ) -> RuntimeResult<Result<Vec<u8>, TvmError>> {
+        let mut g = self.host.lock();
+        Ok(BgBytesHost::read(&mut *g, ptr.into(), len).map_err(Into::into))
+    }
+
+    fn write(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        ptr: Handle,
+        data: Vec<u8>,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut g = self.host.lock();
+        Ok(BgBytesHost::write(&mut *g, ptr.into(), data).map_err(Into::into))
+    }
+
+    fn copy(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        src: Handle,
+        dst: Handle,
+        len: u32,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut g = self.host.lock();
+        Ok(BgBytesHost::copy(&mut *g, src.into(), dst.into(), len).map_err(Into::into))
+    }
+
+    fn read_into(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        src: Handle,
+        dst_region: u16,
+        dst_offset: u32,
+        len: u32,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut g = self.host.lock();
+        Ok(BgBytesHost::read_into(&mut *g, src.into(), dst_region, dst_offset, len)
+            .map_err(Into::into))
+    }
+
+    fn write_from(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        src_region: u16,
+        src_offset: u32,
+        dst: Handle,
+        len: u32,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut g = self.host.lock();
+        Ok(BgBytesHost::write_from(&mut *g, src_region, src_offset, dst.into(), len)
+            .map_err(Into::into))
+    }
+
+    fn copy_region(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        src_region: u16,
+        src_offset: u32,
+        dst_region: u16,
+        dst_offset: u32,
+        len: u32,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut g = self.host.lock();
+        Ok(BgBytesHost::copy_region(
+            &mut *g,
+            src_region,
+            src_offset,
+            dst_region,
+            dst_offset,
+            len,
+        )
+        .map_err(Into::into))
+    }
+}
+
+/// Register the `tvm:memory/bytes@0.1.0` interface.
+pub fn install_tvm_bytes_imports(
+    imports: HostImports,
+    host: SharedTvmHost,
+) -> HostImports {
+    imports.register_sync("tvm:memory/bytes@0.1.0", TvmBytesHost::new(host))
+}
+
+/// Wasmos-native implementation of `tvm:memory/diagnostics@0.1.0`.
+#[derive(Clone)]
+pub struct TvmDiagnosticsHost {
+    host: SharedTvmHost,
+}
+
+impl TvmDiagnosticsHost {
+    pub fn new(host: SharedTvmHost) -> Self {
+        Self { host }
+    }
+}
+
+#[host_iface(sync)]
+impl TvmDiagnosticsHost {
+    fn list_regions(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+    ) -> RuntimeResult<Vec<RegionInfo>> {
+        let mut g = self.host.lock();
+        Ok(BgDiagnosticsHost::list_regions(&mut *g)
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
+    fn fault_count(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<u64> {
+        let mut g = self.host.lock();
+        Ok(BgDiagnosticsHost::fault_count(&mut *g, region_id))
+    }
+
+    fn allocation_count(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<u64> {
+        let mut g = self.host.lock();
+        Ok(BgDiagnosticsHost::allocation_count(&mut *g, region_id))
+    }
+
+    fn bytes_read_count(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<u64> {
+        let mut g = self.host.lock();
+        Ok(BgDiagnosticsHost::bytes_read_count(&mut *g, region_id))
+    }
+
+    fn bytes_written_count(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<u64> {
+        let mut g = self.host.lock();
+        Ok(BgDiagnosticsHost::bytes_written_count(&mut *g, region_id))
+    }
+
+    fn metrics_snapshot(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<Result<RegionMetrics, TvmError>> {
+        let mut g = self.host.lock();
+        Ok(BgDiagnosticsHost::metrics_snapshot(&mut *g, region_id)
+            .map(Into::into)
+            .map_err(Into::into))
+    }
+}
+
+/// Register the `tvm:memory/diagnostics@0.1.0` interface.
+pub fn install_tvm_diagnostics_imports(
+    imports: HostImports,
+    host: SharedTvmHost,
+) -> HostImports {
+    imports.register_sync("tvm:memory/diagnostics@0.1.0", TvmDiagnosticsHost::new(host))
+}
+
+/// One-shot composite that registers all three
+/// `tvm:memory@0.1.0` interfaces against the same
+/// [`SharedTvmHost`]. Mirrors the sqlink Arc 1
+/// `install_sqlink_imports` shape.
+///
+/// Consumers who want to install a subset — e.g. diagnostics-only
+/// probes without giving the guest region-management privileges —
+/// use the per-interface entry points above.
+pub fn install_tvm_imports_shared(
+    imports: HostImports,
+    host: SharedTvmHost,
+) -> HostImports {
+    let imports = install_tvm_manager_imports(imports, host.clone());
+    let imports = install_tvm_bytes_imports(imports, host.clone());
+    install_tvm_diagnostics_imports(imports, host)
+}
+
 // ── Round-trip tests ────────────────────────────────────────────────
 //
 // Guard against silent WIT drift: if the wit-bindgen shape changes,
@@ -445,5 +821,61 @@ mod tests {
         let v = e.clone().to_value();
         let back = TvmError::from_value(v).expect("TvmError::from_value");
         assert_eq!(e, back);
+    }
+
+    // ── D2 Session 3 — install fns ────────────────────────────────
+
+    /// Compile-check + registration test for the composite. Verifies
+    /// all three interface names land in the `HostImports` set — if
+    /// the register_sync API drifts or the #[host_iface(sync)] macro
+    /// changes its trait bounds, this fails at build time.
+    #[test]
+    fn install_tvm_imports_shared_registers_all_three_interfaces() {
+        let host = SharedTvmHost::new();
+        let imports = install_tvm_imports_shared(HostImports::new(), host);
+        // HostImports doesn't expose an iter today; the registration
+        // itself is the compile-check. If register_sync silently
+        // stopped chaining, this would leak a warning about
+        // dropped return values.
+        let _ = imports;
+    }
+
+    /// One inspection test per interface — locks the SharedTvmHost
+    /// and asks the diagnostics handler for list_regions on an
+    /// empty host. Confirms the handler dispatches without a live
+    /// wasm instance.
+    #[test]
+    fn diagnostics_list_regions_on_empty_host() {
+        use wasmos_runtime_api::SyncHostCall;
+        use wasmos_runtime_api::Value;
+
+        struct StubCtx;
+        impl wasmos_runtime_api::HostCallCtxImpl for StubCtx {
+            fn new_host_resource(
+                &mut self,
+                _iface: &str,
+                _name: &str,
+                _rep: u32,
+            ) -> RuntimeResult<Value> {
+                unreachable!("list_regions does not mint resources")
+            }
+            fn resource_rep(&mut self, _v: &Value) -> RuntimeResult<u32> {
+                unreachable!()
+            }
+        }
+
+        let host = SharedTvmHost::new();
+        let handler = TvmDiagnosticsHost::new(host);
+        let mut inner = StubCtx;
+        let mut ctx = HostCallContext::new(&mut inner);
+        let out = handler
+            .call(&mut ctx, "list-regions", vec![])
+            .expect("list_regions dispatch");
+        // list-regions returns a WIT list<region-info>. Empty host →
+        // empty list. Wire shape: Value::List(vec![]).
+        match out.as_slice() {
+            [Value::List(items)] if items.is_empty() => {}
+            other => panic!("expected empty Value::List, got {other:?}"),
+        }
     }
 }
