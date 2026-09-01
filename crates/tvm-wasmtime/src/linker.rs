@@ -94,20 +94,29 @@ pub fn add_concurrent_to_linker<T: AsMut<ConcurrentTvmHost> + Send + 'static>(
 /// that host *untrusted* actors on a shared directory and want one to
 /// be unable to exhaust the substrate for the others.
 ///
-/// **Deprecated (ADR-0029 Phase 6.9 D2 Session 5).** The per-actor
-/// budget-accounting shape is not directly mirrored by the wasmos-
-/// side per-actor variant (which pulls raw `TvmHost` via
-/// `ctx.consumer_state::<T>()`). If your workload needs
-/// `PerActorTvmHost`'s outstanding-bytes accounting, stay on this
-/// entry behind `#[allow(deprecated)]`; a wasmos-side variant
-/// would need a design session.
+/// **Deprecated (ADR-0029 Phase 6.9 D2 Sessions 5 + 12).** The
+/// wasmos-native equivalent for the per-actor budget-accounting
+/// shape is
+/// [`crate::wasmos_bindings::install_tvm_imports_per_actor_budget`]
+/// (Session 12). Consumers using `PerActorTvmHost`'s outstanding-
+/// bytes accounting migrate by:
+///   1. Replacing `add_per_actor_to_linker(&mut linker)` with
+///      `install_tvm_imports_per_actor_budget(HostImports::new(),
+///      per_actor_host)`.
+///   2. Threading the returned `HostImports` into the wasmos
+///      `ExecutionContext` before instantiate.
+///
+/// Same budget semantics: alloc enforces the outstanding-bytes cap
+/// and sets the overrun flag; dealloc returns the budget. See
+/// Session 12 companion tests
+/// (`per_actor_budget_alloc_returns_error_on_overrun`,
+/// `per_actor_budget_dealloc_returns_budget`) for the behavior
+/// guarantees.
 #[deprecated(
     since = "0.1.1",
-    note = "PerActorTvmHost's budget-accounting shape has no direct \
-            wasmos mirror yet. Stay on this entry behind \
-            `#[allow(deprecated)]` if you need it, or use \
-            install_tvm_imports_per_actor::<T> for the raw per-actor \
-            TvmHost shape."
+    note = "Use `wasmos_bindings::install_tvm_imports_per_actor_budget(imports, PerActorTvmHost)` \
+            with a wasmos-backed ExecutionContext. Session 12 (D2 in-place arc) landed the \
+            wasmos peer with identical budget-accounting semantics."
 )]
 pub fn add_per_actor_to_linker<T: AsMut<PerActorTvmHost> + Send + 'static>(
     linker: &mut Linker<T>,

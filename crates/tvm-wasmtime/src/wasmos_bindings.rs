@@ -869,6 +869,367 @@ pub fn install_tvm_imports_per_actor<T: AsMut<TvmHost> + 'static>(
     install_tvm_diagnostics_imports_per_actor::<T>(imports)
 }
 
+// ── D2 Session 12 — PerActorTvmHost budget-accounting wasmos peer ───
+//
+// Closes bindings.rs retirement gate 2. The wit-bindgen
+// `add_per_actor_to_linker` (deprecated at D2 Session 5) delegates
+// to `PerActorTvmHost`'s own `ManagerHost` / `BytesHost` /
+// `DiagnosticsHost` impls (in per_actor.rs) which enforce the
+// outstanding-bytes budget on alloc + return budget on dealloc.
+// This section wraps that trait surface as wasmos
+// `#[host_iface(sync)]` handlers so consumers get identical
+// budget semantics through the wasmos install path.
+//
+// Concurrency model: `PerActorTvmHost` is `Clone`; it internally
+// holds `Arc<Mutex<BudgetState>>` + `SharedTvmHost` (also
+// `Arc<Mutex<TvmHost>>`). Every handler clones the host into a
+// local `mut` binding — the clone is cheap (two Arc bumps) and
+// mutations go through the internal mutexes, matching the
+// wit-bindgen path's concurrency behavior exactly.
+
+/// Wasmos-native implementation of `tvm:memory/manager@0.1.0`
+/// against [`PerActorTvmHost`]. Enforces the actor's
+/// outstanding-bytes budget on `alloc` (returning
+/// [`TvmError::AllocationFailed`] + setting the overrun flag when
+/// exceeded) and returns the budget on `dealloc`.
+#[derive(Clone)]
+pub struct TvmManagerHostBudget {
+    host: crate::PerActorTvmHost,
+}
+
+impl TvmManagerHostBudget {
+    pub fn new(host: crate::PerActorTvmHost) -> Self {
+        Self { host }
+    }
+}
+
+#[host_iface(sync)]
+impl TvmManagerHostBudget {
+    fn create_region(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        kind: RegionKind,
+        capacity: u32,
+    ) -> RuntimeResult<Result<u16, TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgManagerHost::create_region(&mut h, kind.into(), capacity).map_err(Into::into))
+    }
+
+    fn destroy_region(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgManagerHost::destroy_region(&mut h, region_id).map_err(Into::into))
+    }
+
+    fn alloc(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+        size: u32,
+    ) -> RuntimeResult<Result<Handle, TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgManagerHost::alloc(&mut h, region_id, size)
+            .map(Into::into)
+            .map_err(Into::into))
+    }
+
+    fn dealloc(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        ptr: Handle,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgManagerHost::dealloc(&mut h, ptr.into()).map_err(Into::into))
+    }
+
+    fn describe_region(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<Result<RegionInfo, TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgManagerHost::describe_region(&mut h, region_id)
+            .map(Into::into)
+            .map_err(Into::into))
+    }
+
+    fn promote_region(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgManagerHost::promote_region(&mut h, region_id).map_err(Into::into))
+    }
+
+    fn demote_region(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgManagerHost::demote_region(&mut h, region_id).map_err(Into::into))
+    }
+
+    fn spill_region(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgManagerHost::spill_region(&mut h, region_id).map_err(Into::into))
+    }
+
+    fn load_region(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgManagerHost::load_region(&mut h, region_id).map_err(Into::into))
+    }
+
+    fn pin(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgManagerHost::pin(&mut h, region_id).map_err(Into::into))
+    }
+
+    fn unpin(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgManagerHost::unpin(&mut h, region_id).map_err(Into::into))
+    }
+
+    fn compact_region(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<Result<CompactResult, TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgManagerHost::compact_region(&mut h, region_id)
+            .map(Into::into)
+            .map_err(Into::into))
+    }
+}
+
+/// Register `tvm:memory/manager@0.1.0` in per-actor-budget mode.
+pub fn install_tvm_manager_imports_per_actor_budget(
+    imports: HostImports,
+    host: crate::PerActorTvmHost,
+) -> HostImports {
+    imports.register_sync("tvm:memory/manager@0.1.0", TvmManagerHostBudget::new(host))
+}
+
+/// Wasmos-native implementation of `tvm:memory/bytes@0.1.0`
+/// against [`PerActorTvmHost`]. Bytes methods don't touch the
+/// budget (the wit-bindgen `PerActorTvmHost::BytesHost` impl just
+/// delegates to the inner `SharedTvmHost`); this struct exists
+/// for API symmetry with the manager + diagnostics variants so
+/// consumers install a single-flavor composite.
+#[derive(Clone)]
+pub struct TvmBytesHostBudget {
+    host: crate::PerActorTvmHost,
+}
+
+impl TvmBytesHostBudget {
+    pub fn new(host: crate::PerActorTvmHost) -> Self {
+        Self { host }
+    }
+}
+
+#[host_iface(sync)]
+impl TvmBytesHostBudget {
+    fn read(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        ptr: Handle,
+        len: u32,
+    ) -> RuntimeResult<Result<Vec<u8>, TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgBytesHost::read(&mut h, ptr.into(), len).map_err(Into::into))
+    }
+
+    fn write(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        ptr: Handle,
+        data: Vec<u8>,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgBytesHost::write(&mut h, ptr.into(), data).map_err(Into::into))
+    }
+
+    fn copy(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        src: Handle,
+        dst: Handle,
+        len: u32,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgBytesHost::copy(&mut h, src.into(), dst.into(), len).map_err(Into::into))
+    }
+
+    fn read_into(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        src: Handle,
+        dst_region: u16,
+        dst_offset: u32,
+        len: u32,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgBytesHost::read_into(&mut h, src.into(), dst_region, dst_offset, len)
+            .map_err(Into::into))
+    }
+
+    fn write_from(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        src_region: u16,
+        src_offset: u32,
+        dst: Handle,
+        len: u32,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgBytesHost::write_from(&mut h, src_region, src_offset, dst.into(), len)
+            .map_err(Into::into))
+    }
+
+    fn copy_region(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        src_region: u16,
+        src_offset: u32,
+        dst_region: u16,
+        dst_offset: u32,
+        len: u32,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgBytesHost::copy_region(&mut h, src_region, src_offset, dst_region, dst_offset, len)
+            .map_err(Into::into))
+    }
+}
+
+/// Register `tvm:memory/bytes@0.1.0` in per-actor-budget mode.
+pub fn install_tvm_bytes_imports_per_actor_budget(
+    imports: HostImports,
+    host: crate::PerActorTvmHost,
+) -> HostImports {
+    imports.register_sync("tvm:memory/bytes@0.1.0", TvmBytesHostBudget::new(host))
+}
+
+/// Wasmos-native implementation of `tvm:memory/diagnostics@0.1.0`
+/// against [`PerActorTvmHost`].
+#[derive(Clone)]
+pub struct TvmDiagnosticsHostBudget {
+    host: crate::PerActorTvmHost,
+}
+
+impl TvmDiagnosticsHostBudget {
+    pub fn new(host: crate::PerActorTvmHost) -> Self {
+        Self { host }
+    }
+}
+
+#[host_iface(sync)]
+impl TvmDiagnosticsHostBudget {
+    fn list_regions(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+    ) -> RuntimeResult<Vec<RegionInfo>> {
+        let mut h = self.host.clone();
+        Ok(BgDiagnosticsHost::list_regions(&mut h)
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
+    fn fault_count(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<u64> {
+        let mut h = self.host.clone();
+        Ok(BgDiagnosticsHost::fault_count(&mut h, region_id))
+    }
+
+    fn allocation_count(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<u64> {
+        let mut h = self.host.clone();
+        Ok(BgDiagnosticsHost::allocation_count(&mut h, region_id))
+    }
+
+    fn bytes_read_count(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<u64> {
+        let mut h = self.host.clone();
+        Ok(BgDiagnosticsHost::bytes_read_count(&mut h, region_id))
+    }
+
+    fn bytes_written_count(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<u64> {
+        let mut h = self.host.clone();
+        Ok(BgDiagnosticsHost::bytes_written_count(&mut h, region_id))
+    }
+
+    fn metrics_snapshot(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<Result<RegionMetrics, TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgDiagnosticsHost::metrics_snapshot(&mut h, region_id)
+            .map(Into::into)
+            .map_err(Into::into))
+    }
+}
+
+/// Register `tvm:memory/diagnostics@0.1.0` in per-actor-budget mode.
+pub fn install_tvm_diagnostics_imports_per_actor_budget(
+    imports: HostImports,
+    host: crate::PerActorTvmHost,
+) -> HostImports {
+    imports.register_sync("tvm:memory/diagnostics@0.1.0", TvmDiagnosticsHostBudget::new(host))
+}
+
+/// Per-actor-budget composite — one-shot registration of all three
+/// `tvm:memory@0.1.0` interfaces against a
+/// [`PerActorTvmHost`]. Peer of [`install_tvm_imports_shared`] +
+/// [`install_tvm_imports_per_actor`], covering the budget-accounting
+/// concurrency model.
+///
+/// The wasmos install path for consumers whose actor model needs
+/// outstanding-bytes bookkeeping (girder's per-actor TVM shape).
+/// Replaces the deprecated
+/// [`crate::linker::add_per_actor_to_linker`] entry.
+pub fn install_tvm_imports_per_actor_budget(
+    imports: HostImports,
+    host: crate::PerActorTvmHost,
+) -> HostImports {
+    let imports = install_tvm_manager_imports_per_actor_budget(imports, host.clone());
+    let imports = install_tvm_bytes_imports_per_actor_budget(imports, host.clone());
+    install_tvm_diagnostics_imports_per_actor_budget(imports, host)
+}
+
 // ── Round-trip tests ────────────────────────────────────────────────
 //
 // Guard against silent WIT drift: if the wit-bindgen shape changes,
@@ -1150,5 +1511,129 @@ mod tests {
     fn install_tvm_imports_per_actor_composite_compiles() {
         let imports = install_tvm_imports_per_actor::<MyStoreData>(HostImports::new());
         let _ = imports;
+    }
+
+    // ── D2 Session 12 — PerActorTvmHost budget-accounting tests ────
+
+    use crate::{PerActorTvmHost, SharedTvmHost, TvmBudget};
+
+    /// Empty stub ctx for the per-actor-budget dispatch tests —
+    /// these handlers don't touch resources or consumer_state.
+    struct EmptyCtx;
+    impl wasmos_runtime_api::HostCallCtxImpl for EmptyCtx {
+        fn new_host_resource(
+            &mut self,
+            _iface: &str,
+            _name: &str,
+            _rep: u32,
+        ) -> RuntimeResult<wasmos_runtime_api::Value> {
+            unreachable!()
+        }
+        fn resource_rep(&mut self, _v: &wasmos_runtime_api::Value) -> RuntimeResult<u32> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn install_tvm_imports_per_actor_budget_composite_registers_all_three() {
+        let host = PerActorTvmHost::new(SharedTvmHost::new(), TvmBudget::unlimited());
+        let imports = install_tvm_imports_per_actor_budget(HostImports::new(), host);
+        assert_eq!(imports.len(), 3);
+        assert!(imports.get("tvm:memory/manager@0.1.0").is_some());
+        assert!(imports.get("tvm:memory/bytes@0.1.0").is_some());
+        assert!(imports.get("tvm:memory/diagnostics@0.1.0").is_some());
+    }
+
+    #[test]
+    fn per_actor_budget_alloc_returns_error_on_overrun() {
+        use wasmos_runtime_api::{SyncHostCall, Value};
+
+        // 32 outstanding-bytes budget. Alloc 16 succeeds; alloc 32 more
+        // (total 48) hits the budget cap.
+        let inner = SharedTvmHost::new();
+        {
+            let mut g = inner.lock();
+            <TvmHost as BgManagerHost>::create_region(
+                &mut g,
+                bg::RegionKind::HotHeap,
+                256,
+            )
+            .expect("create_region");
+        }
+        let host = PerActorTvmHost::new(inner, TvmBudget::outstanding_bytes(32));
+
+        let manager = TvmManagerHostBudget::new(host.clone());
+        let mut inner_ctx = EmptyCtx;
+        let mut ctx = HostCallContext::new(&mut inner_ctx);
+
+        // First alloc: 16 bytes — succeeds (16 <= 32).
+        let out1 = manager
+            .call(&mut ctx, "alloc", vec![Value::U16(0), Value::U32(16)])
+            .expect("first alloc");
+        // Second alloc: 32 bytes more — outstanding would be 48 > 32.
+        let out2 = manager
+            .call(&mut ctx, "alloc", vec![Value::U16(0), Value::U32(32)])
+            .expect("second alloc dispatches");
+
+        // First outer Value::Variant carries the WIT-canonical
+        // result<handle, tvm-error> tag; second is a variant with
+        // "err" discriminant AND the budget-overrun flag is set on
+        // the host.
+        let out2_is_err = matches!(
+            out2.as_slice(),
+            [Value::Result(Err(_))]
+        );
+        assert!(
+            out2_is_err,
+            "expected Result::Err for over-budget alloc, got {out2:?}"
+        );
+        assert!(host.budget_overrun(), "budget_overrun flag must be set after over-budget alloc");
+        let _ = out1;
+    }
+
+    #[test]
+    fn per_actor_budget_dealloc_returns_budget() {
+        use wasmos_runtime_api::{SyncHostCall, Value};
+
+        let inner = SharedTvmHost::new();
+        {
+            let mut g = inner.lock();
+            <TvmHost as BgManagerHost>::create_region(
+                &mut g,
+                bg::RegionKind::HotHeap,
+                256,
+            )
+            .expect("create_region");
+        }
+        // Budget = 64. Alloc 64, dealloc, alloc 64 again — second
+        // alloc succeeds because dealloc returned the budget.
+        let host = PerActorTvmHost::new(inner, TvmBudget::outstanding_bytes(64));
+        let manager = TvmManagerHostBudget::new(host.clone());
+        let mut inner_ctx = EmptyCtx;
+        let mut ctx = HostCallContext::new(&mut inner_ctx);
+
+        // Alloc 64.
+        let out1 = manager
+            .call(&mut ctx, "alloc", vec![Value::U16(0), Value::U32(64)])
+            .expect("alloc");
+        // Extract the handle. Result::Ok carries the payload.
+        let handle_value = match out1.as_slice() {
+            [Value::Result(Ok(Some(p)))] => (**p).clone(),
+            other => panic!("expected Result::Ok(Some(_)), got {other:?}"),
+        };
+        assert_eq!(host.outstanding_bytes(), 64);
+
+        // Dealloc — budget released.
+        let _ = manager
+            .call(&mut ctx, "dealloc", vec![handle_value])
+            .expect("dealloc");
+        assert_eq!(host.outstanding_bytes(), 0);
+
+        // Alloc 64 again — succeeds because budget was returned.
+        let out2 = manager
+            .call(&mut ctx, "alloc", vec![Value::U16(0), Value::U32(64)])
+            .expect("second alloc");
+        let is_ok = matches!(out2.as_slice(), [Value::Result(Ok(_))]);
+        assert!(is_ok, "post-dealloc alloc must succeed within budget");
     }
 }
