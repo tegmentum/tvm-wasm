@@ -513,6 +513,149 @@ impl WasmosImportedRegion {
     }
 }
 
+// ── D2 Session 7 — build_wasmos_imported_setup helper ───────────────
+//
+// Peer of [`build_imported_setup`] on the wasmos side. Takes an
+// `Arc<dyn Runtime>` the caller supplies (tvm-wasmtime doesn't
+// pick which adapter — that stays a caller concern per ADR-0029)
+// and returns a fully wired setup: N shared memories allocated
+// via `Runtime::create_shared_memory`, wrapped in
+// `WasmosImportedRegion` instances, and paired with a
+// `SharedMemoryImports` composite naming each region as the
+// wit-bindgen `("tvm", "r<id>")` shape.
+//
+// The returned tuple mirrors [`build_imported_setup`] but with
+// wasmos abstractions instead of wasmtime:
+//   `(ExecutionContext, TvmHost, Vec<u16>)` instead of
+//   `(wasmtime::Engine, wasmtime::Store<TvmHost>,
+//    wasmtime::Linker<TvmHost>, Vec<u16>)`.
+//
+// The caller instantiates a module against the returned
+// ExecutionContext via `runtime.instantiate_module(&compiled, ctx)`.
+
+/// Setup output for the wasmos-native imported-region path.
+pub struct WasmosImportedSetup {
+    /// Fully-populated ExecutionContext with the shared-memory
+    /// imports naming each region as `("tvm", "r<id>")`. The
+    /// caller adds its own `host_imports` (via
+    /// [`ExecutionContext::with_host_imports`]) before threading
+    /// through `Runtime::instantiate_module`.
+    pub context: wasmos_runtime_api::ExecutionContext,
+    /// A [`crate::TvmHost`] with the newly-created imported regions
+    /// registered in its `wasmos_imported` vec. Callers use the
+    /// returned `region_ids` to index this host's regions for
+    /// alloc / read / write.
+    pub host: crate::TvmHost,
+    /// The region ids the caller uses to reference each region on
+    /// the host side (matches the `"r<id>"` guest-import names).
+    pub region_ids: Vec<u16>,
+}
+
+/// Async peer of [`build_imported_setup`]. See module docstring
+/// for the shape.
+///
+/// # Arguments
+///
+/// - `runtime`: consumer-provided wasmos adapter that supports
+///   the `wasmos:shared-memory` capability. Adapters that don't
+///   surface [`wasmos_runtime_api::RuntimeError::CapabilityUnavailable`].
+/// - `n_regions`: how many imported regions to allocate.
+/// - `region_capacity`: bytes per region. Rounded up to the next
+///   wasm page (64 KiB) by the adapter.
+/// - `kind`: TVM region kind (informs allocator + placement policy).
+///
+/// Every intermediate error surfaces as
+/// [`wasmos_runtime_api::RuntimeError`]; the caller wraps into its
+/// own error type at the boundary.
+pub async fn build_wasmos_imported_setup(
+    runtime: &dyn wasmos_runtime_api::Runtime,
+    n_regions: u32,
+    region_capacity: u32,
+    kind: RegionKind,
+) -> wasmos_runtime_api::RuntimeResult<WasmosImportedSetup> {
+    use wasmos_runtime_api::{ExecutionContext, SharedMemoryDescriptor, SharedMemoryImports};
+
+    const PAGE: u32 = 64 * 1024;
+
+    let mut host = crate::TvmHost::new();
+    let mut region_ids = Vec::with_capacity(n_regions as usize);
+    let mut imports = SharedMemoryImports::new();
+
+    for _ in 0..n_regions {
+        // Reserve a fresh id on the host — matches the
+        // [`create_imported_in_store`] convention above so
+        // wit-bindgen + wasmos regions share id space.
+        let id = host.next_imported_id;
+        host.next_imported_id = host.next_imported_id.checked_add(1).ok_or_else(|| {
+            wasmos_runtime_api::RuntimeError::msg(
+                "build_wasmos_imported_setup: imported-region id space exhausted",
+            )
+        })?;
+
+        // Ask the adapter for a shared memory sized to fit
+        // `region_capacity` — round up to whole wasm pages.
+        let min_pages = region_capacity.div_ceil(PAGE).max(1);
+        let descriptor = SharedMemoryDescriptor::new(min_pages, min_pages);
+        let handle = runtime.create_shared_memory(descriptor).await?;
+
+        // Wrap in a WasmosImportedRegion. Allocator picks up
+        // from the host's default (matches wit-bindgen path).
+        let region = WasmosImportedRegion::new(
+            handle.clone_handle(),
+            id,
+            kind,
+            region_capacity,
+            host.default_allocator,
+            PlacementPolicy::for_kind(kind),
+        );
+        host.wasmos_imported.push(region);
+        imports = imports.register("tvm", format!("r{id}"), handle);
+        region_ids.push(id);
+    }
+
+    let context = ExecutionContext::new().with_shared_memory_imports(imports);
+    Ok(WasmosImportedSetup { context, host, region_ids })
+}
+
+/// One-call setup with pre-loaded payloads. Async peer of
+/// [`build_imported_setup_with_data`]. Alloc + write each payload
+/// through the host-side [`WasmosImportedRegion::alloc`] +
+/// [`WasmosImportedRegion::write`] path — the same memory is
+/// visible to the guest through the returned
+/// [`WasmosImportedSetup::context`].
+pub async fn build_wasmos_imported_setup_with_data(
+    runtime: &dyn wasmos_runtime_api::Runtime,
+    payloads: &[&[u8]],
+    kind: RegionKind,
+    extra_capacity: u32,
+) -> wasmos_runtime_api::RuntimeResult<(WasmosImportedSetup, Vec<Handle>)> {
+    let mut capacities = Vec::with_capacity(payloads.len());
+    for p in payloads {
+        capacities.push((p.len() as u32).saturating_add(extra_capacity));
+    }
+    // Take the max capacity as the region size — build_imported_setup
+    // uses per-region capacity but the shared-memory descriptor
+    // benefits from uniform pages when they end up in the same
+    // adapter pool.
+    let region_capacity = capacities.iter().copied().max().unwrap_or(0);
+
+    let mut setup =
+        build_wasmos_imported_setup(runtime, payloads.len() as u32, region_capacity, kind).await?;
+
+    let mut handles = Vec::with_capacity(payloads.len());
+    for (i, payload) in payloads.iter().enumerate() {
+        let region = &mut setup.host.wasmos_imported[i];
+        let h = region
+            .alloc(payload.len() as u32)
+            .map_err(|e| wasmos_runtime_api::RuntimeError::msg(format!("alloc: {e:?}")))?;
+        region
+            .write(h, payload)
+            .map_err(|e| wasmos_runtime_api::RuntimeError::msg(format!("write: {e:?}")))?;
+        handles.push(h);
+    }
+    Ok((setup, handles))
+}
+
 #[cfg(test)]
 mod wasmos_imported_tests {
     use super::*;
@@ -622,5 +765,122 @@ mod wasmos_imported_tests {
         let a = r.shared_memory();
         let b = r.shared_memory();
         assert_eq!(a.data_size_bytes(), b.data_size_bytes());
+    }
+
+    // ── D2 Session 7 — build_wasmos_imported_setup tests ───────
+
+    use async_trait::async_trait;
+    use wasmos_runtime_api::{
+        CompileOptions, CompiledComponent, CompiledModule, ComponentSource, ExecutionContext,
+        Instance, ModuleInstance, Runtime, RuntimeMetadata, RuntimeResult, SharedMemoryDescriptor,
+    };
+
+    /// Stub Runtime that only implements create_shared_memory +
+    /// metadata — enough to exercise build_wasmos_imported_setup
+    /// without a real adapter. Other methods are unreachable
+    /// under this test path.
+    struct StubRuntime {
+        meta: RuntimeMetadata,
+    }
+
+    impl StubRuntime {
+        fn new() -> Self {
+            Self {
+                meta: RuntimeMetadata {
+                    api_version: wasmos_runtime_api::RuntimeApiVersion::new(1),
+                    implementation: "stub".into(),
+                    implementation_version: "0.0.0".into(),
+                    channel: wasmos_runtime_api::RuntimeChannel::Edge,
+                    capabilities: wasmos_runtime_api::RuntimeCapabilities::default(),
+                    adapter: "tvm-wasmtime-test-stub".into(),
+                },
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Runtime for StubRuntime {
+        fn metadata(&self) -> &RuntimeMetadata {
+            &self.meta
+        }
+        async fn compile_component(
+            &self,
+            _source: ComponentSource,
+            _options: CompileOptions,
+        ) -> RuntimeResult<CompiledComponent> {
+            unreachable!("stub does not compile components")
+        }
+        async fn instantiate(
+            &self,
+            _component: &CompiledComponent,
+            _context: ExecutionContext,
+        ) -> RuntimeResult<Instance> {
+            unreachable!()
+        }
+        async fn compile_module(
+            &self,
+            _source: ComponentSource,
+            _options: CompileOptions,
+        ) -> RuntimeResult<CompiledModule> {
+            unreachable!()
+        }
+        async fn instantiate_module(
+            &self,
+            _module: &CompiledModule,
+            _context: ExecutionContext,
+        ) -> RuntimeResult<ModuleInstance> {
+            unreachable!()
+        }
+        async fn create_shared_memory(
+            &self,
+            descriptor: SharedMemoryDescriptor,
+        ) -> RuntimeResult<wasmos_runtime_api::SharedMemory> {
+            // Return a Vec-backed FakeShared sized to descriptor.min_pages.
+            Ok(wasmos_runtime_api::SharedMemory::from_impl(Arc::new(FakeShared {
+                buf: Mutex::new(vec![0u8; descriptor.min_pages as usize * PAGE]),
+            })))
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn build_wasmos_imported_setup_allocates_n_regions_and_populates_imports() {
+        let rt = StubRuntime::new();
+        let setup = super::build_wasmos_imported_setup(&rt, 3, 4096, RegionKind::HotHeap)
+            .await
+            .expect("build");
+        assert_eq!(setup.region_ids, vec![0, 1, 2]);
+        assert_eq!(setup.host.wasmos_imported.len(), 3);
+        // ExecutionContext carries the three shared-memory imports
+        // under names ("tvm", "r0") / ("tvm", "r1") / ("tvm", "r2").
+        assert!(setup.context.shared_memory_imports.get("tvm", "r0").is_some());
+        assert!(setup.context.shared_memory_imports.get("tvm", "r1").is_some());
+        assert!(setup.context.shared_memory_imports.get("tvm", "r2").is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn build_wasmos_imported_setup_with_data_preloads_bytes() {
+        let rt = StubRuntime::new();
+        let (setup, handles) = super::build_wasmos_imported_setup_with_data(
+            &rt,
+            &[b"hello", b"world!"],
+            RegionKind::HotHeap,
+            /* extra_capacity */ 16,
+        )
+        .await
+        .expect("build");
+
+        assert_eq!(setup.region_ids, vec![0, 1]);
+        assert_eq!(handles.len(), 2);
+
+        // Read back through the host-side WasmosImportedRegion; the
+        // ExecutionContext's SharedMemoryImports carries clones of
+        // the SAME shared memories, so the guest (if instantiated)
+        // would see the same bytes.
+        let mut buf0 = [0u8; 5];
+        setup.host.wasmos_imported[0].read(handles[0], &mut buf0).unwrap();
+        assert_eq!(&buf0, b"hello");
+        let mut buf1 = [0u8; 6];
+        setup.host.wasmos_imported[1].read(handles[1], &mut buf1).unwrap();
+        assert_eq!(&buf1, b"world!");
     }
 }

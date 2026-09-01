@@ -116,6 +116,13 @@ pub struct TvmHost {
     /// (`tvm.r0`, `tvm.r1`, ...). Mixed-mode callers should bump this
     /// before creating imported regions.
     pub next_imported_id: u16,
+    /// D2 Session 7 — wasmos-native imported regions, backed by
+    /// [`wasmos_runtime_api::SharedMemory`] instead of
+    /// [`wasmtime::Memory`]. Sibling of [`Self::imported`] under
+    /// the same id space (both counters draw from
+    /// [`Self::next_imported_id`]). Populated by
+    /// [`crate::imported::build_wasmos_imported_setup`].
+    pub wasmos_imported: Vec<crate::imported::WasmosImportedRegion>,
 }
 
 impl Default for TvmHost {
@@ -135,6 +142,7 @@ impl TvmHost {
             cached_memory: CachedGuestMemory::default(),
             imported: Vec::new(),
             next_imported_id: 0,
+            wasmos_imported: Vec::new(),
         }
     }
 
@@ -158,6 +166,7 @@ impl TvmHost {
             cached_memory: CachedGuestMemory::default(),
             imported: Vec::new(),
             next_imported_id: 0,
+            wasmos_imported: Vec::new(),
         }
     }
 
