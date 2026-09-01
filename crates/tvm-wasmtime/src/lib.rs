@@ -63,10 +63,15 @@ pub mod wasmos_bindings;
 
 pub use builder::TvmBuilder;
 pub use concurrent_host::ConcurrentTvmHost;
-pub use engine_config::{imported_region_engine_config, pooling_imported_region_engine_config};
+pub use engine_config::{
+    imported_region_engine_config, imported_region_runtime_config,
+    pooling_imported_region_engine_config, pooling_imported_region_runtime_config,
+};
 pub use host::TvmHost;
 pub use imported::{
-    build_imported_setup, build_imported_setup_with_data, create_imported_in_store, ImportedRegion,
+    build_imported_setup, build_imported_setup_with_data, build_wasmos_imported_setup,
+    build_wasmos_imported_setup_with_data, create_imported_in_store, ImportedRegion,
+    WasmosImportedRegion, WasmosImportedSetup,
 };
 // ADR-0029 Phase 6.9 D2 Session 5: the wit-bindgen linker entries
 // are marked `#[deprecated]` at their definitions; #[allow(deprecated)]
@@ -77,7 +82,9 @@ pub use linker::{
     add_concurrent_to_linker, add_per_actor_to_linker, add_shared_to_linker, add_to_linker,
     add_to_linker_with,
 };
-pub use memory_factory::{RuntimeMemoryRegion, WasmtimeMemoryRegion, WASM_PAGE_SIZE};
+pub use memory_factory::{
+    RuntimeMemoryRegion, WasmosMemoryRegion, WasmtimeMemoryRegion, WASM_PAGE_SIZE,
+};
 pub use per_actor::{PerActorTvmHost, TvmBudget};
 // ADR-0029 Phase 6.9.d Session 7: the wit-bindgen raw entry points
 // are marked `#[deprecated]` at their definitions; #[allow(deprecated)]

@@ -6,19 +6,32 @@
 //! sit at the same level as `RegionDirectory::spill_region` but for
 //! `RuntimeMemoryRegion<Cx>` implementations.
 //!
-//! Typical use:
+//! Typical use — wasmtime path (`Cx = wasmtime::Store<T>`):
 //! ```ignore
-//! // Spill: write the live memory to a backing store.
 //! spill_runtime_region(&memory, &store, &mut backing, region_id, generation)?;
-//!
-//! // Later, load: reconstruct a fresh region from the same store.
 //! let memory = load_runtime_region::<Store<()>, WasmtimeMemoryRegion>(
 //!     &mut store, &mut backing, region_id, generation)?;
 //! ```
 //!
-//! Both helpers are generic over the runtime context type so they work for
-//! any future runtime that satisfies `RuntimeMemoryRegion<Cx>`, not just
-//! wasmtime.
+//! Wasmos path (`Cx = ()` — SharedMemory carries its own state):
+//! ```ignore
+//! // spill works on the wasmos path — snapshot() reads the shared memory.
+//! spill_runtime_region(&wasmos_region, &(), &mut backing, region_id, generation)?;
+//!
+//! // load DOES NOT work on the wasmos path: WasmosMemoryRegion::restore
+//! // returns TvmError::BackingStore because allocation is a Runtime-
+//! // level concern (see WasmosMemoryRegion::restore docstring). Consumers
+//! // that need to reload from backing should:
+//! //   1. Call backing.load(region_id, generation) themselves for the bytes.
+//! //   2. Allocate a fresh SharedMemory via
+//! //      wasmos_runtime_api::Runtime::create_shared_memory.
+//! //   3. Wrap in WasmosMemoryRegion via from_shared_memory.
+//! //   4. Write the loaded bytes via .write(&mut (), 0, &bytes).
+//! ```
+//!
+//! Both helpers are generic over the runtime context type — the generic
+//! surface (`RuntimeMemoryRegion<Cx>`) works for any wasmos-adapter memory
+//! backend that satisfies the trait, wasmtime and wasmos alike.
 
 use tvm_core::{BackingStore, Result};
 
