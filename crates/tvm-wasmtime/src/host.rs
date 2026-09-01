@@ -749,6 +749,34 @@ impl TvmHost {
         }
         Ok(())
     }
+
+    /// D2 Session 8 — wasmos-native peer of [`Self::register_imported`].
+    /// Consumes the caller's [`wasmos_runtime_api::SharedMemoryImports`]
+    /// composite and returns it extended with an entry for every
+    /// [`crate::imported::WasmosImportedRegion`] in
+    /// [`Self::wasmos_imported`], keyed by
+    /// `("tvm", "r<id>")` to match the wit-bindgen shape.
+    ///
+    /// Typical usage:
+    /// ```rust,ignore
+    /// use wasmos_runtime_api::SharedMemoryImports;
+    /// let imports = host.register_imported_wasmos(SharedMemoryImports::new());
+    /// let ctx = ExecutionContext::new().with_shared_memory_imports(imports);
+    /// let inst = runtime.instantiate_module(&compiled, ctx).await?;
+    /// ```
+    ///
+    /// Additive. The wit-bindgen [`Self::register_imported`] stays for
+    /// consumers still on the deprecated linker path; they call one or
+    /// the other depending on which adapter they're wiring against.
+    pub fn register_imported_wasmos(
+        &self,
+        mut imports: wasmos_runtime_api::SharedMemoryImports,
+    ) -> wasmos_runtime_api::SharedMemoryImports {
+        for region in &self.wasmos_imported {
+            imports = imports.register("tvm", region.import_name(), region.shared_memory());
+        }
+        imports
+    }
 }
 
 impl AsMut<TvmHost> for TvmHost {
@@ -1129,5 +1157,103 @@ fn to_wit_err(e: CoreError) -> TvmError {
             TvmError::BackingStore("unsupported by allocator".into())
         }
         CoreError::PolicyViolation => TvmError::BackingStore("forbidden by region policy".into()),
+    }
+}
+
+// ── D2 Session 8 — TvmHost::register_imported_wasmos tests ──────────
+
+#[cfg(test)]
+mod wasmos_register_tests {
+    use super::*;
+    use crate::imported::WasmosImportedRegion;
+    use std::sync::{Arc, Mutex};
+    use tvm_core::{AllocatorKind, PlacementPolicy};
+    use wasmos_runtime_api::{
+        RuntimeError, RuntimeResult, SharedMemory, SharedMemoryImpl, SharedMemoryImports,
+    };
+
+    const PAGE: usize = 64 * 1024;
+
+    struct FakeShared {
+        buf: Mutex<Vec<u8>>,
+    }
+    impl SharedMemoryImpl for FakeShared {
+        fn size_pages(&self) -> u64 {
+            (self.buf.lock().unwrap().len() / PAGE) as u64
+        }
+        fn data_size_bytes(&self) -> usize {
+            self.buf.lock().unwrap().len()
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn read(&self, off: usize, len: usize) -> RuntimeResult<Vec<u8>> {
+            let b = self.buf.lock().unwrap();
+            let end = off.saturating_add(len);
+            if end > b.len() {
+                return Err(RuntimeError::msg("oob"));
+            }
+            Ok(b[off..end].to_vec())
+        }
+        fn write(&self, off: usize, bytes: &[u8]) -> RuntimeResult<()> {
+            let mut b = self.buf.lock().unwrap();
+            let end = off.saturating_add(bytes.len());
+            if end > b.len() {
+                return Err(RuntimeError::msg("oob"));
+            }
+            b[off..end].copy_from_slice(bytes);
+            Ok(())
+        }
+    }
+
+    fn shared(bytes: usize) -> SharedMemory {
+        SharedMemory::from_impl(Arc::new(FakeShared {
+            buf: Mutex::new(vec![0u8; bytes]),
+        }))
+    }
+
+    fn add_region(host: &mut TvmHost, id: u16) {
+        host.wasmos_imported.push(WasmosImportedRegion::new(
+            shared(PAGE),
+            id,
+            tvm_core::RegionKind::HotHeap,
+            1024,
+            AllocatorKind::Bump,
+            PlacementPolicy::for_kind(tvm_core::RegionKind::HotHeap),
+        ));
+    }
+
+    #[test]
+    fn register_imported_wasmos_extends_with_all_regions() {
+        let mut host = TvmHost::new();
+        add_region(&mut host, 0);
+        add_region(&mut host, 1);
+        add_region(&mut host, 7);
+        let imports = host.register_imported_wasmos(SharedMemoryImports::new());
+        assert!(imports.get("tvm", "r0").is_some());
+        assert!(imports.get("tvm", "r1").is_some());
+        assert!(imports.get("tvm", "r7").is_some());
+        assert_eq!(imports.len(), 3);
+    }
+
+    #[test]
+    fn register_imported_wasmos_preserves_prior_imports() {
+        let mut host = TvmHost::new();
+        add_region(&mut host, 0);
+        let prior = SharedMemoryImports::new().register("env", "memory", shared(PAGE));
+        let imports = host.register_imported_wasmos(prior);
+        // Both the caller's env::memory and the region-derived tvm::r0 present.
+        assert!(imports.get("env", "memory").is_some());
+        assert!(imports.get("tvm", "r0").is_some());
+        assert_eq!(imports.len(), 2);
+    }
+
+    #[test]
+    fn register_imported_wasmos_empty_host_returns_prior_imports_unchanged() {
+        let host = TvmHost::new();
+        let prior = SharedMemoryImports::new().register("env", "memory", shared(PAGE));
+        let imports = host.register_imported_wasmos(prior);
+        assert_eq!(imports.len(), 1);
+        assert!(imports.get("env", "memory").is_some());
     }
 }
