@@ -128,6 +128,21 @@ than per-actor on small calls, so the escape-hatch case is real.
 This bench continues to publish the head-to-head numbers so a
 future re-evaluation has data.
 
+**Deletion assessment (Session 8, 2026-09-01):** the wit-bindgen
+entry points and their dedicated tests + reference implementation
+are RETAINED. The Session 8 numbers above justify the decision:
+per-actor cuts the shared overhead roughly in half (removing the
+`SharedTvmHost::lock`) but doesn't close the ~450ns gap to
+wasmtime-native for small calls. Any consumer with a documented
+hot-loop workload can still take the wit-bindgen coupling behind
+`#[allow(deprecated)]` and get 4-13× lower per-call cost than the
+best wasmos path today. A future deletion trigger would be: either
+a wasmos-side change that closes the remaining native gap (e.g. the
+Phase 6.13 Session 3 `register_static` monomorphized-dispatch path
+extended to skip `Vec<CoreValue>` boxing), or an explicit decision
+that perf-hot raw-tvm is not a workload wasmos needs to serve
+optimally. Neither has happened; the wit-bindgen path stays.
+
 ### Portable / cross-adapter code: `raw_linker_wasmos` (either variant)
 
 If you need the same handler surface to work on wasmtime v48,
