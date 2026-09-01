@@ -310,16 +310,15 @@ impl From<TvmError> for bg::TvmError {
     }
 }
 
-// ── Host structs — #[host_iface(sync)] for tvm:memory@0.1.0 (D2 Session 3) ─
+// ── Host structs — #[host_iface(sync)] for tvm:memory@0.1.0 (D2 Sessions 3-4) ─
 //
 // Wasmos-native implementations of the three function-carrying
 // interfaces: `manager`, `bytes`, `diagnostics`. Each struct holds
-// a `SharedTvmHost` (Arc<Mutex<TvmHost>>) and locks per call —
-// this is the SHARED concurrency model matching
-// `raw_linker_wasmos::TvmHostSource::Shared`. A per-actor variant
-// (matching `TvmHostSource::PerActor`) is a future session; it
-// pulls state via `ctx.consumer_state::<TvmHost>()` and reuses
-// the same handler bodies.
+// a [`TvmHostSource`] and dispatches through it — the enum unifies
+// SHARED (`SharedTvmHost` locked per call) and PER-ACTOR (state
+// pulled from `ctx.consumer_state::<T>()`) concurrency models.
+// Mirrors the raw_linker_wasmos::TvmHostSource pattern from Phase
+// 6.9.d Session 5.
 //
 // # Delegation
 //
@@ -338,16 +337,143 @@ impl From<TvmError> for bg::TvmError {
 // case, version-tagged, matching wit-bindgen's `add_to_linker`
 // name generation.
 
+use crate::TvmHost;
+
+/// D2 Session 4 — abstract over "where the `TvmHost` lives" so the
+/// same three host structs work under two concurrency models.
+/// Twin of [`crate::raw_linker_wasmos::TvmHostSource`] but tied to
+/// [`HostCallContext`] instead of `CoreImportContext` (the
+/// component-model vs core-Wasm split).
+///
+/// - [`Self::Shared`]: caller closes a [`SharedTvmHost`] into every
+///   handler at register time; per-call `Arc<Mutex<>>::lock()`.
+/// - [`Self::PerActor`]: caller uses one of the
+///   `install_tvm_imports_per_actor*` entries against a wasmos
+///   ExecutionContext whose consumer state is `T: AsMut<TvmHost>`.
+///   Handlers pull `&mut TvmHost` via
+///   `ctx.consumer_state::<T>()` — the wasmos abstraction's
+///   equivalent of the wit-bindgen `caller.data_mut().as_mut()`
+///   pattern (matches girder's `RawTvmActorInstance` shape).
+#[derive(Clone)]
+pub(crate) enum TvmHostSource {
+    Shared(SharedTvmHost),
+    PerActor(std::sync::Arc<dyn TvmHostExtractor>),
+}
+
+/// D2 Session 4 — consumer-supplied projection from ctx to
+/// `&mut TvmHost`. Twin of
+/// [`crate::raw_linker_wasmos::TvmHostExtractor`] for the
+/// component-model side.
+pub trait TvmHostExtractor: Send + Sync + 'static {
+    fn extract<'a>(
+        &self,
+        ctx: &'a mut HostCallContext<'_>,
+    ) -> RuntimeResult<&'a mut TvmHost>;
+}
+
+/// D2 Session 4 — monomorphized extractor for any
+/// `T: AsMut<TvmHost> + 'static`. Twin of
+/// [`crate::raw_linker_wasmos::AsMutExtractor`].
+pub struct HostAsMutExtractor<T: AsMut<TvmHost> + 'static> {
+    _marker: std::marker::PhantomData<fn() -> T>,
+}
+
+impl<T: AsMut<TvmHost> + 'static> HostAsMutExtractor<T> {
+    pub fn new() -> Self {
+        Self { _marker: std::marker::PhantomData }
+    }
+}
+
+impl<T: AsMut<TvmHost> + 'static> Default for HostAsMutExtractor<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: AsMut<TvmHost> + 'static> TvmHostExtractor for HostAsMutExtractor<T> {
+    fn extract<'a>(
+        &self,
+        ctx: &'a mut HostCallContext<'_>,
+    ) -> RuntimeResult<&'a mut TvmHost> {
+        let state = ctx.consumer_state::<T>().ok_or_else(|| {
+            wasmos_runtime_api::RuntimeError::msg(format!(
+                "wasmos_bindings::TvmHostSource::PerActor: no `{}` in \
+                 `ctx.consumer_state`. Install this composite via a wasmos \
+                 adapter that populates the consumer-state slot with the \
+                 expected type (v48 sync_bridge_resource + \
+                 install_host_call, or the future component-model \
+                 install_host_imports bridge).",
+                std::any::type_name::<T>(),
+            ))
+        })?;
+        Ok(state.as_mut())
+    }
+}
+
+/// Guard that dereferences to `&mut TvmHost` regardless of variant.
+/// Twin of [`crate::raw_linker_wasmos::TvmHostGuard`].
+pub(crate) enum TvmHostGuard<'a> {
+    Shared(std::sync::MutexGuard<'a, TvmHost>),
+    PerActor(&'a mut TvmHost),
+}
+
+impl std::ops::Deref for TvmHostGuard<'_> {
+    type Target = TvmHost;
+    fn deref(&self) -> &TvmHost {
+        match self {
+            TvmHostGuard::Shared(g) => &*g,
+            TvmHostGuard::PerActor(h) => &**h,
+        }
+    }
+}
+
+impl std::ops::DerefMut for TvmHostGuard<'_> {
+    fn deref_mut(&mut self) -> &mut TvmHost {
+        match self {
+            TvmHostGuard::Shared(g) => &mut *g,
+            TvmHostGuard::PerActor(h) => &mut **h,
+        }
+    }
+}
+
+impl TvmHostSource {
+    fn lock<'a>(
+        &'a self,
+        ctx: &'a mut HostCallContext<'_>,
+    ) -> RuntimeResult<TvmHostGuard<'a>> {
+        match self {
+            TvmHostSource::Shared(shared) => Ok(TvmHostGuard::Shared(shared.lock())),
+            TvmHostSource::PerActor(extractor) => {
+                let host = extractor.extract(ctx)?;
+                Ok(TvmHostGuard::PerActor(host))
+            }
+        }
+    }
+}
+
 /// Wasmos-native implementation of `tvm:memory/manager@0.1.0`.
-/// Locks the shared `TvmHost` per call.
+/// Reaches `&mut TvmHost` via [`TvmHostSource`] — either a
+/// [`SharedTvmHost`] locked per call, or the consumer's own
+/// per-actor state pulled via `ctx.consumer_state::<T>()`.
 #[derive(Clone)]
 pub struct TvmManagerHost {
-    host: SharedTvmHost,
+    state: TvmHostSource,
 }
 
 impl TvmManagerHost {
+    /// D2 Session 3 — shared-concurrency constructor.
     pub fn new(host: SharedTvmHost) -> Self {
-        Self { host }
+        Self { state: TvmHostSource::Shared(host) }
+    }
+
+    /// D2 Session 4 — per-actor constructor; consumer store data
+    /// must implement `AsMut<TvmHost>`.
+    pub fn per_actor<T: AsMut<TvmHost> + 'static>() -> Self {
+        Self {
+            state: TvmHostSource::PerActor(std::sync::Arc::new(
+                HostAsMutExtractor::<T>::new(),
+            )),
+        }
     }
 }
 
@@ -355,30 +481,30 @@ impl TvmManagerHost {
 impl TvmManagerHost {
     fn create_region(
         &self,
-        _ctx: &mut HostCallContext<'_>,
+        ctx: &mut HostCallContext<'_>,
         kind: RegionKind,
         capacity: u32,
     ) -> RuntimeResult<Result<u16, TvmError>> {
-        let mut g = self.host.lock();
+        let mut g = self.state.lock(ctx)?;
         Ok(BgManagerHost::create_region(&mut *g, kind.into(), capacity).map_err(Into::into))
     }
 
     fn destroy_region(
         &self,
-        _ctx: &mut HostCallContext<'_>,
+        ctx: &mut HostCallContext<'_>,
         region_id: u16,
     ) -> RuntimeResult<Result<(), TvmError>> {
-        let mut g = self.host.lock();
+        let mut g = self.state.lock(ctx)?;
         Ok(BgManagerHost::destroy_region(&mut *g, region_id).map_err(Into::into))
     }
 
     fn alloc(
         &self,
-        _ctx: &mut HostCallContext<'_>,
+        ctx: &mut HostCallContext<'_>,
         region_id: u16,
         size: u32,
     ) -> RuntimeResult<Result<Handle, TvmError>> {
-        let mut g = self.host.lock();
+        let mut g = self.state.lock(ctx)?;
         Ok(BgManagerHost::alloc(&mut *g, region_id, size)
             .map(Into::into)
             .map_err(Into::into))
@@ -386,19 +512,19 @@ impl TvmManagerHost {
 
     fn dealloc(
         &self,
-        _ctx: &mut HostCallContext<'_>,
+        ctx: &mut HostCallContext<'_>,
         ptr: Handle,
     ) -> RuntimeResult<Result<(), TvmError>> {
-        let mut g = self.host.lock();
+        let mut g = self.state.lock(ctx)?;
         Ok(BgManagerHost::dealloc(&mut *g, ptr.into()).map_err(Into::into))
     }
 
     fn describe_region(
         &self,
-        _ctx: &mut HostCallContext<'_>,
+        ctx: &mut HostCallContext<'_>,
         region_id: u16,
     ) -> RuntimeResult<Result<RegionInfo, TvmError>> {
-        let mut g = self.host.lock();
+        let mut g = self.state.lock(ctx)?;
         Ok(BgManagerHost::describe_region(&mut *g, region_id)
             .map(Into::into)
             .map_err(Into::into))
@@ -406,64 +532,64 @@ impl TvmManagerHost {
 
     fn promote_region(
         &self,
-        _ctx: &mut HostCallContext<'_>,
+        ctx: &mut HostCallContext<'_>,
         region_id: u16,
     ) -> RuntimeResult<Result<(), TvmError>> {
-        let mut g = self.host.lock();
+        let mut g = self.state.lock(ctx)?;
         Ok(BgManagerHost::promote_region(&mut *g, region_id).map_err(Into::into))
     }
 
     fn demote_region(
         &self,
-        _ctx: &mut HostCallContext<'_>,
+        ctx: &mut HostCallContext<'_>,
         region_id: u16,
     ) -> RuntimeResult<Result<(), TvmError>> {
-        let mut g = self.host.lock();
+        let mut g = self.state.lock(ctx)?;
         Ok(BgManagerHost::demote_region(&mut *g, region_id).map_err(Into::into))
     }
 
     fn spill_region(
         &self,
-        _ctx: &mut HostCallContext<'_>,
+        ctx: &mut HostCallContext<'_>,
         region_id: u16,
     ) -> RuntimeResult<Result<(), TvmError>> {
-        let mut g = self.host.lock();
+        let mut g = self.state.lock(ctx)?;
         Ok(BgManagerHost::spill_region(&mut *g, region_id).map_err(Into::into))
     }
 
     fn load_region(
         &self,
-        _ctx: &mut HostCallContext<'_>,
+        ctx: &mut HostCallContext<'_>,
         region_id: u16,
     ) -> RuntimeResult<Result<(), TvmError>> {
-        let mut g = self.host.lock();
+        let mut g = self.state.lock(ctx)?;
         Ok(BgManagerHost::load_region(&mut *g, region_id).map_err(Into::into))
     }
 
     fn pin(
         &self,
-        _ctx: &mut HostCallContext<'_>,
+        ctx: &mut HostCallContext<'_>,
         region_id: u16,
     ) -> RuntimeResult<Result<(), TvmError>> {
-        let mut g = self.host.lock();
+        let mut g = self.state.lock(ctx)?;
         Ok(BgManagerHost::pin(&mut *g, region_id).map_err(Into::into))
     }
 
     fn unpin(
         &self,
-        _ctx: &mut HostCallContext<'_>,
+        ctx: &mut HostCallContext<'_>,
         region_id: u16,
     ) -> RuntimeResult<Result<(), TvmError>> {
-        let mut g = self.host.lock();
+        let mut g = self.state.lock(ctx)?;
         Ok(BgManagerHost::unpin(&mut *g, region_id).map_err(Into::into))
     }
 
     fn compact_region(
         &self,
-        _ctx: &mut HostCallContext<'_>,
+        ctx: &mut HostCallContext<'_>,
         region_id: u16,
     ) -> RuntimeResult<Result<CompactResult, TvmError>> {
-        let mut g = self.host.lock();
+        let mut g = self.state.lock(ctx)?;
         Ok(BgManagerHost::compact_region(&mut *g, region_id)
             .map(Into::into)
             .map_err(Into::into))
@@ -483,12 +609,19 @@ pub fn install_tvm_manager_imports(
 /// Wasmos-native implementation of `tvm:memory/bytes@0.1.0`.
 #[derive(Clone)]
 pub struct TvmBytesHost {
-    host: SharedTvmHost,
+    state: TvmHostSource,
 }
 
 impl TvmBytesHost {
     pub fn new(host: SharedTvmHost) -> Self {
-        Self { host }
+        Self { state: TvmHostSource::Shared(host) }
+    }
+    pub fn per_actor<T: AsMut<TvmHost> + 'static>() -> Self {
+        Self {
+            state: TvmHostSource::PerActor(std::sync::Arc::new(
+                HostAsMutExtractor::<T>::new(),
+            )),
+        }
     }
 }
 
@@ -496,71 +629,71 @@ impl TvmBytesHost {
 impl TvmBytesHost {
     fn read(
         &self,
-        _ctx: &mut HostCallContext<'_>,
+        ctx: &mut HostCallContext<'_>,
         ptr: Handle,
         len: u32,
     ) -> RuntimeResult<Result<Vec<u8>, TvmError>> {
-        let mut g = self.host.lock();
+        let mut g = self.state.lock(ctx)?;
         Ok(BgBytesHost::read(&mut *g, ptr.into(), len).map_err(Into::into))
     }
 
     fn write(
         &self,
-        _ctx: &mut HostCallContext<'_>,
+        ctx: &mut HostCallContext<'_>,
         ptr: Handle,
         data: Vec<u8>,
     ) -> RuntimeResult<Result<(), TvmError>> {
-        let mut g = self.host.lock();
+        let mut g = self.state.lock(ctx)?;
         Ok(BgBytesHost::write(&mut *g, ptr.into(), data).map_err(Into::into))
     }
 
     fn copy(
         &self,
-        _ctx: &mut HostCallContext<'_>,
+        ctx: &mut HostCallContext<'_>,
         src: Handle,
         dst: Handle,
         len: u32,
     ) -> RuntimeResult<Result<(), TvmError>> {
-        let mut g = self.host.lock();
+        let mut g = self.state.lock(ctx)?;
         Ok(BgBytesHost::copy(&mut *g, src.into(), dst.into(), len).map_err(Into::into))
     }
 
     fn read_into(
         &self,
-        _ctx: &mut HostCallContext<'_>,
+        ctx: &mut HostCallContext<'_>,
         src: Handle,
         dst_region: u16,
         dst_offset: u32,
         len: u32,
     ) -> RuntimeResult<Result<(), TvmError>> {
-        let mut g = self.host.lock();
+        let mut g = self.state.lock(ctx)?;
         Ok(BgBytesHost::read_into(&mut *g, src.into(), dst_region, dst_offset, len)
             .map_err(Into::into))
     }
 
     fn write_from(
         &self,
-        _ctx: &mut HostCallContext<'_>,
+        ctx: &mut HostCallContext<'_>,
         src_region: u16,
         src_offset: u32,
         dst: Handle,
         len: u32,
     ) -> RuntimeResult<Result<(), TvmError>> {
-        let mut g = self.host.lock();
+        let mut g = self.state.lock(ctx)?;
         Ok(BgBytesHost::write_from(&mut *g, src_region, src_offset, dst.into(), len)
             .map_err(Into::into))
     }
 
     fn copy_region(
         &self,
-        _ctx: &mut HostCallContext<'_>,
+        ctx: &mut HostCallContext<'_>,
         src_region: u16,
         src_offset: u32,
         dst_region: u16,
         dst_offset: u32,
         len: u32,
     ) -> RuntimeResult<Result<(), TvmError>> {
-        let mut g = self.host.lock();
+        let mut g = self.state.lock(ctx)?;
         Ok(BgBytesHost::copy_region(
             &mut *g,
             src_region,
@@ -584,12 +717,19 @@ pub fn install_tvm_bytes_imports(
 /// Wasmos-native implementation of `tvm:memory/diagnostics@0.1.0`.
 #[derive(Clone)]
 pub struct TvmDiagnosticsHost {
-    host: SharedTvmHost,
+    state: TvmHostSource,
 }
 
 impl TvmDiagnosticsHost {
     pub fn new(host: SharedTvmHost) -> Self {
-        Self { host }
+        Self { state: TvmHostSource::Shared(host) }
+    }
+    pub fn per_actor<T: AsMut<TvmHost> + 'static>() -> Self {
+        Self {
+            state: TvmHostSource::PerActor(std::sync::Arc::new(
+                HostAsMutExtractor::<T>::new(),
+            )),
+        }
     }
 }
 
@@ -597,9 +737,9 @@ impl TvmDiagnosticsHost {
 impl TvmDiagnosticsHost {
     fn list_regions(
         &self,
-        _ctx: &mut HostCallContext<'_>,
+        ctx: &mut HostCallContext<'_>,
     ) -> RuntimeResult<Vec<RegionInfo>> {
-        let mut g = self.host.lock();
+        let mut g = self.state.lock(ctx)?;
         Ok(BgDiagnosticsHost::list_regions(&mut *g)
             .into_iter()
             .map(Into::into)
@@ -608,46 +748,46 @@ impl TvmDiagnosticsHost {
 
     fn fault_count(
         &self,
-        _ctx: &mut HostCallContext<'_>,
+        ctx: &mut HostCallContext<'_>,
         region_id: u16,
     ) -> RuntimeResult<u64> {
-        let mut g = self.host.lock();
+        let mut g = self.state.lock(ctx)?;
         Ok(BgDiagnosticsHost::fault_count(&mut *g, region_id))
     }
 
     fn allocation_count(
         &self,
-        _ctx: &mut HostCallContext<'_>,
+        ctx: &mut HostCallContext<'_>,
         region_id: u16,
     ) -> RuntimeResult<u64> {
-        let mut g = self.host.lock();
+        let mut g = self.state.lock(ctx)?;
         Ok(BgDiagnosticsHost::allocation_count(&mut *g, region_id))
     }
 
     fn bytes_read_count(
         &self,
-        _ctx: &mut HostCallContext<'_>,
+        ctx: &mut HostCallContext<'_>,
         region_id: u16,
     ) -> RuntimeResult<u64> {
-        let mut g = self.host.lock();
+        let mut g = self.state.lock(ctx)?;
         Ok(BgDiagnosticsHost::bytes_read_count(&mut *g, region_id))
     }
 
     fn bytes_written_count(
         &self,
-        _ctx: &mut HostCallContext<'_>,
+        ctx: &mut HostCallContext<'_>,
         region_id: u16,
     ) -> RuntimeResult<u64> {
-        let mut g = self.host.lock();
+        let mut g = self.state.lock(ctx)?;
         Ok(BgDiagnosticsHost::bytes_written_count(&mut *g, region_id))
     }
 
     fn metrics_snapshot(
         &self,
-        _ctx: &mut HostCallContext<'_>,
+        ctx: &mut HostCallContext<'_>,
         region_id: u16,
     ) -> RuntimeResult<Result<RegionMetrics, TvmError>> {
-        let mut g = self.host.lock();
+        let mut g = self.state.lock(ctx)?;
         Ok(BgDiagnosticsHost::metrics_snapshot(&mut *g, region_id)
             .map(Into::into)
             .map_err(Into::into))
@@ -677,6 +817,56 @@ pub fn install_tvm_imports_shared(
     let imports = install_tvm_manager_imports(imports, host.clone());
     let imports = install_tvm_bytes_imports(imports, host.clone());
     install_tvm_diagnostics_imports(imports, host)
+}
+
+// ── D2 Session 4 — per-actor install fns ────────────────────────────
+//
+// Peer of the shared install fns above. Handlers pull `&mut TvmHost`
+// from `ctx.consumer_state::<T>()` on each call, where `T` is the
+// consumer's store data type implementing `AsMut<TvmHost>`. Wired
+// through a wasmos adapter's HostCall bridge that populates the
+// consumer_state slot (v48 sync_bridge_resource + the future
+// component-model install path).
+
+/// Register `tvm:memory/manager@0.1.0` in per-actor mode.
+pub fn install_tvm_manager_imports_per_actor<T: AsMut<TvmHost> + 'static>(
+    imports: HostImports,
+) -> HostImports {
+    imports.register_sync(
+        "tvm:memory/manager@0.1.0",
+        TvmManagerHost::per_actor::<T>(),
+    )
+}
+
+/// Register `tvm:memory/bytes@0.1.0` in per-actor mode.
+pub fn install_tvm_bytes_imports_per_actor<T: AsMut<TvmHost> + 'static>(
+    imports: HostImports,
+) -> HostImports {
+    imports.register_sync(
+        "tvm:memory/bytes@0.1.0",
+        TvmBytesHost::per_actor::<T>(),
+    )
+}
+
+/// Register `tvm:memory/diagnostics@0.1.0` in per-actor mode.
+pub fn install_tvm_diagnostics_imports_per_actor<T: AsMut<TvmHost> + 'static>(
+    imports: HostImports,
+) -> HostImports {
+    imports.register_sync(
+        "tvm:memory/diagnostics@0.1.0",
+        TvmDiagnosticsHost::per_actor::<T>(),
+    )
+}
+
+/// Per-actor composite — one-shot registration of all three
+/// interfaces against `T: AsMut<TvmHost>` consumer state. Peer of
+/// [`install_tvm_imports_shared`].
+pub fn install_tvm_imports_per_actor<T: AsMut<TvmHost> + 'static>(
+    imports: HostImports,
+) -> HostImports {
+    let imports = install_tvm_manager_imports_per_actor::<T>(imports);
+    let imports = install_tvm_bytes_imports_per_actor::<T>(imports);
+    install_tvm_diagnostics_imports_per_actor::<T>(imports)
 }
 
 // ── Round-trip tests ────────────────────────────────────────────────
@@ -877,5 +1067,88 @@ mod tests {
             [Value::List(items)] if items.is_empty() => {}
             other => panic!("expected empty Value::List, got {other:?}"),
         }
+    }
+
+    // ── D2 Session 4 — per-actor path tests ────────────────────────
+    //
+    // Ctx impls with a `consumer_state` slot pointed at a real
+    // `TvmHost` (matching what a wasmos adapter bridge would do
+    // when routing calls through a wasmtime Store<T>).
+
+    struct PerActorCtx<'a, T: 'static + Send> {
+        state: &'a mut T,
+    }
+
+    impl<T: 'static + Send> wasmos_runtime_api::HostCallCtxImpl for PerActorCtx<'_, T> {
+        fn new_host_resource(
+            &mut self,
+            _iface: &str,
+            _name: &str,
+            _rep: u32,
+        ) -> RuntimeResult<wasmos_runtime_api::Value> {
+            unreachable!("this test path does not mint resources")
+        }
+        fn resource_rep(&mut self, _v: &wasmos_runtime_api::Value) -> RuntimeResult<u32> {
+            unreachable!()
+        }
+        fn consumer_state(&mut self) -> Option<&mut (dyn std::any::Any + Send)> {
+            Some(self.state as &mut (dyn std::any::Any + Send))
+        }
+    }
+
+    /// Wrapper store data implementing `AsMut<TvmHost>` — mirrors
+    /// girder's `RawTvmState { tvm: TvmHost, ... }` shape.
+    struct MyStoreData {
+        tvm: TvmHost,
+    }
+    impl AsMut<TvmHost> for MyStoreData {
+        fn as_mut(&mut self) -> &mut TvmHost {
+            &mut self.tvm
+        }
+    }
+
+    #[test]
+    fn per_actor_diagnostics_dispatches_through_consumer_state() {
+        use wasmos_runtime_api::{SyncHostCall, Value};
+
+        let mut data = MyStoreData { tvm: TvmHost::new() };
+        let handler = TvmDiagnosticsHost::per_actor::<MyStoreData>();
+        let mut inner = PerActorCtx { state: &mut data };
+        let mut ctx = HostCallContext::new(&mut inner);
+        let out = handler
+            .call(&mut ctx, "list-regions", vec![])
+            .expect("list_regions per-actor dispatch");
+        match out.as_slice() {
+            [Value::List(items)] if items.is_empty() => {}
+            other => panic!("expected empty Value::List, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn per_actor_wrong_state_type_errors_with_diagnostic() {
+        use wasmos_runtime_api::SyncHostCall;
+
+        // Handler expects MyStoreData, but ctx exposes ()
+        // (through a mismatched-type consumer_state). Downcast
+        // returns None; the extractor surfaces the diagnostic.
+        let mut wrong: u64 = 0;
+        let handler = TvmDiagnosticsHost::per_actor::<MyStoreData>();
+        let mut inner = PerActorCtx { state: &mut wrong };
+        let mut ctx = HostCallContext::new(&mut inner);
+        let err = handler
+            .call(&mut ctx, "list-regions", vec![])
+            .expect_err("wrong consumer_state type must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("consumer_state") && msg.contains("MyStoreData"),
+            "expected wrong-type diagnostic naming MyStoreData; got: {msg}"
+        );
+    }
+
+    /// Composite compile-check for the per-actor entry point.
+    #[test]
+    fn install_tvm_imports_per_actor_composite_compiles() {
+        let imports = install_tvm_imports_per_actor::<MyStoreData>(HostImports::new());
+        let _ = imports;
     }
 }
