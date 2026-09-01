@@ -133,6 +133,41 @@ impl TvmBuilder {
         Ok((engine, store, linker))
     }
 
+    /// ADR-0029 Phase 6.9.d — wasmos-flavored builder finisher.
+    /// Returns a [`wasmos_runtime_api::CoreImports`] composite that
+    /// carries the TVM raw fast-path imports as [`wasmos_runtime_api::
+    /// CoreImportFn`] handlers, wired against a shared TVM host.
+    ///
+    /// The returned `CoreImports` contains **no wasmtime types** — it
+    /// is the wasmtime-independent handoff surface for tvm-wasm.
+    /// Consumers pass it to their chosen wasmos adapter (or a raw
+    /// wasmtime engine via the wasmos adapter's core-imports install
+    /// path when that lands) without ever naming `Engine`, `Store`,
+    /// or `Linker` themselves.
+    ///
+    /// The `.with_raw_imports()` toggle from the wasmtime-typed
+    /// [`Self::build`] flow does not apply here — this method
+    /// always registers the raw imports (that's the point of the
+    /// wasmos-flavored builder path). Backing store + allocator +
+    /// multi-memory settings from the fluent builder are IGNORED
+    /// because the wasmos path currently owns the SharedTvmHost
+    /// construction internally; a `with_wasmos_backing` /
+    /// `with_wasmos_allocator` follow-up threads those through when
+    /// a consumer needs the customisation.
+    ///
+    /// The returned handle is intentionally NOT a `(Store, Linker)`
+    /// pair like [`Self::build`] — the wasmos path pushes engine
+    /// ownership onto the caller's adapter (or a future
+    /// [`wasmos_runtime_api::Runtime`] instance), so returning
+    /// wasmtime-owned state here would defeat the abstraction.
+    pub fn for_wasmos(self) -> wasmos_runtime_api::CoreImports {
+        let host = crate::shared_host::SharedTvmHost::new();
+        crate::raw_linker_wasmos::add_raw_imports(
+            wasmos_runtime_api::CoreImports::new(),
+            host,
+        )
+    }
+
     fn build_internal(
         self,
         component_only: bool,

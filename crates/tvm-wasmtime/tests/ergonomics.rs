@@ -50,6 +50,25 @@ fn builder_quickstart() -> wasmtime::Result<()> {
     Ok(())
 }
 
+/// ADR-0029 Phase 6.9.d — `TvmBuilder::for_wasmos()` returns a
+/// `wasmos_runtime_api::CoreImports` composite (no wasmtime types
+/// on the caller side). Sanity-checks the return type and that the
+/// composite carries a non-empty registered-imports set (the raw
+/// fast-path registers many mod / fn pairs — the actual count is
+/// implementation-detail; asserting >0 catches an accidental empty
+/// composite regression).
+#[test]
+fn builder_for_wasmos_produces_core_imports() {
+    let imports = TvmBuilder::new().for_wasmos();
+    // Type check — `imports` is `CoreImports`; `iter()` returns
+    // `(mod_name, fn_name)` pairs. Empty would mean the raw imports
+    // weren't wired.
+    assert!(
+        imports.iter().count() > 0,
+        "for_wasmos() must populate raw TVM imports"
+    );
+}
+
 #[test]
 fn builder_with_backing_and_allocator() -> wasmtime::Result<()> {
     let tmp = tempfile::tempdir().unwrap();
