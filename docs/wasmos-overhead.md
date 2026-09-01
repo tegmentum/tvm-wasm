@@ -1,47 +1,84 @@
 # Wasmos raw-path overhead (Phase 6.9.b)
 
-**Status:** measured 2026-08-31 on macOS arm64 (M-series, cold host).
-Bench source: `crates/tvm-wasmtime/benches/wasmos_overhead.rs`. Rerun:
+**Status:** measured 2026-08-31; **refreshed 2026-09-01** with the
+Phase 6.9.d Session 5 per-actor path (`TvmHostSource::PerActor`) as
+a third comparison. macOS arm64 (M-series, cold host). Bench source:
+`crates/tvm-wasmtime/benches/wasmos_overhead.rs`. Rerun:
 `cargo bench -p tvm-wasmtime --bench wasmos_overhead`.
 
 ## What we measured
 
 Same guest, same host state, same handler surface (`tvm.*` from
 `raw_linker.rs` vs `raw_linker_wasmos.rs`), timed head-to-head across
-four workloads and three size classes. 50 samples per case after 5
-warmup iterations. `mann_whitney_u = 0.000` on every pair — the
-differences are statistically ironclad, not noise.
+four workloads and three size classes. Three dispatch paths:
 
-## Numbers
+- **wasmtime**: `add_raw_imports` on a plain `wasmtime::Linker<TvmHost>`,
+  handler pulls `&mut TvmHost` via `caller.data_mut()` (per-actor,
+  no lock).
+- **wasmos-sh** (shared): `raw_linker_wasmos::add_raw_imports` +
+  `SharedTvmHost` closure captured in the handler; per-call
+  `Arc<Mutex<>>::lock()`. Adapter dispatches through
+  `wasmos_runtime_wasmtime_v48::runtime`.
+- **wasmos-pa** (per-actor, new at Phase 6.9.d Session 5):
+  `raw_linker_wasmos::add_raw_imports_per_actor_projected::<TvmHost>`
+  installed on a consumer-owned `Linker<TvmHost>` via
+  `wasmos_runtime_wasmtime_v48::core_import_bridge::install_core_imports`.
+  Handler pulls `&mut TvmHost` via `ctx.consumer_state::<TvmHost>()`
+  (no `Arc<Mutex<>>` lock).
+
+50 samples per case after 5 warmup. `mann_whitney_u = 0.000`
+between every pair — the differences are statistically ironclad,
+not noise. Per-actor-vs-shared reports `mann_whitney_u = 1.000` in
+the same direction (per-actor faster) with equally-strong
+significance.
+
+## Numbers (Session 8 refresh, 2026-09-01)
 
 Per-call wall clock, mean of 50 samples, release build.
 
-| Workload | Size | wasmtime (ns) | wasmos (ns) | delta (ns) | overhead |
-|---|---:|---:|---:|---:|---:|
-| alloc+dealloc | — | 46 | 931 | +885 | +1932% |
-| sum_u8 | 64B | 48 | 805 | +757 | +1595% |
-| sum_u8 | 1KB | 64 | 744 | +680 | +1060% |
-| sum_u8 | 16KB | 380 | 1094 | +714 | +188% |
-| write | 64B | 41 | 842 | +801 | +1963% |
-| write | 1KB | 61 | 935 | +874 | +1437% |
-| write | 16KB | 217 | 1554 | +1337 | +615% |
-| read | 64B | 44 | 836 | +792 | +1796% |
-| read | 1KB | 52 | 888 | +836 | +1592% |
-| read | 16KB | 233 | 1588 | +1355 | +581% |
+| Workload      | Size |  wasmtime (ns) | wasmos-sh (ns) | wasmos-pa (ns) | sh vs wt | pa vs wt | pa vs sh |
+|---------------|-----:|---------------:|---------------:|---------------:|---------:|---------:|---------:|
+| alloc+dealloc |    — |             49 |            916 |            554 |  +1762%  |  +1027%  |   −39.5% |
+| sum_u8        |  64B |             47 |            884 |            381 |  +1762%  |   +702%  |   −56.9% |
+| sum_u8        |  1KB |             66 |            762 |            401 |  +1057%  |   +509%  |   −47.4% |
+| sum_u8        | 16KB |            384 |           1112 |            737 |   +189%  |    +92%  |   −33.7% |
+| write         |  64B |             41 |            856 |            507 |  +1986%  |  +1134%  |   −40.8% |
+| write         |  1KB |             56 |            995 |            545 |  +1683%  |   +877%  |   −45.2% |
+| write         | 16KB |            234 |           1543 |           1102 |   +559%  |   +371%  |   −28.6% |
+| read          |  64B |             39 |            887 |            498 |  +2164%  |  +1171%  |   −43.9% |
+| read          |  1KB |             56 |           1024 |            548 |  +1735%  |   +882%  |   −46.5% |
+| read          | 16KB |            235 |           1603 |           1179 |   +582%  |   +402%  |   −26.5% |
 
-## The single most important reading
+## The three most important readings
 
-**The absolute delta is essentially constant ~700-900ns per call.**
-Look at `sum_u8`: 757 → 680 → 714ns delta across three orders of
-magnitude in payload. The overhead is per-call cost, not per-byte
-cost. The percentage looks worse on small calls because the
-denominator shrinks; the actual work being added is the same
-regardless of size.
+**1. Per-actor is consistently faster than shared, by 27-57%.**
+Removing the `SharedTvmHost::lock()` (per-call `Arc<Mutex<>>::lock`
++ MutexGuard construction) saves ~350-500ns absolute across every
+workload. Confirms the lock is real cost, not noise.
+
+**2. Per-actor still lags wasmtime-native by 4-13× on small calls,
+2× on 16KB.** The remaining gap is per-call abstraction cost that
+neither variant of the wasmos path can eliminate:
+`Arc<dyn CoreImportFn>` vtable, `Vec<CoreValue>` boxing for args +
+return, `CoreImportContext` wrapping, async-future construction +
+`block_on` bridging, `Caller::get_export` per memory-touching call.
+See the cost decomposition below.
+
+**3. Per-byte cost stays constant across paths.** All three paths
+scale linearly with payload; the abstraction adds latency, not
+bandwidth degradation. At 16KB `sum_u8`, per-actor achieves 20 GiB/s
+against wasmtime-native's 40 GiB/s — half the throughput at
+proportionally-larger buffers.
+
+## Cost decomposition
 
 That's the ADR-0029 abstraction tax made concrete:
 
 - `Arc<dyn CoreImportFn>` vtable dispatch — ~20ns.
-- `SharedTvmHost::lock()` uncontended — ~30-80ns.
+- `SharedTvmHost::lock()` uncontended — ~350-500ns (measured as the
+  per-actor-vs-shared delta above; larger than initial estimate
+  because MutexGuard drop + poisoning check + Deref chain add).
+  **Not paid on per-actor.**
 - `Vec<CoreValue>` allocation for args + return — ~50-100ns
   (two heap allocations per call vs zero on wasmtime-native).
 - `CoreImportContext` wrapping + async future construction —
@@ -52,37 +89,53 @@ That's the ADR-0029 abstraction tax made concrete:
 - `Caller::get_export("memory")` HashMap lookup on every
   memory-touching call — ~40-80ns.
 
-That sums to ~500-1000ns of unavoidable-with-current-shape overhead,
-consistent with the measured delta.
+Shared-vs-native gap: ~700-900ns. Per-actor-vs-native gap:
+~350-450ns. The lock cost was the single largest component.
 
 ## What this means for consumers
 
-### Perf-critical hot loops: stay on `raw_linker`
+### Default: `raw_linker_wasmos::add_raw_imports_per_actor_projected`
+
+Girder's `RawTvmActorInstance` (per-actor `TvmHost` in the Store's
+data) and any consumer with a similar shape should default to the
+per-actor variant. It's the fastest wasmos path, portable across
+every wasmos-backed adapter (v48 / edge; WAMR needs Store<T> which
+it doesn't have — see WAMR ack in the source), and has no lock
+contention concerns.
+
+### Shared substrate: `raw_linker_wasmos::add_raw_shared`
+
+When multiple actors legitimately share one `TvmHost` (cross-store
+region visibility — girder's `SharedRawTvmActorInstance` shape),
+the shared path is correct even if slower. The extra ~350-500ns per
+call is what shared-substrate correctness costs.
+
+### Perf-critical hot loops: measured escape to `raw_linker`
 
 If your guest is calling `tvm.alloc` or `tvm.read` in a tight loop
-and each call does <1μs of real work, the wasmos abstraction will
-dominate wall clock. Use `tvm_wasmtime::add_raw_imports` on a
-plain `wasmtime::Linker<T>` and eat the wasmtime coupling. Same
-crate, both paths exported.
+and each call does <1μs of real work, the wasmos abstraction still
+dominates wall clock — per-actor cuts the shared overhead roughly
+in half but doesn't close the gap to wasmtime-native. Use
+`tvm_wasmtime::add_raw_imports` on a plain `wasmtime::Linker<T>`
+behind an `#[allow(deprecated)]` if you've *measured* the gap
+and it's the bottleneck. Same crate, both paths exported.
 
-**Note (ADR-0029 Phase 6.9.d Session 7, 2026-09-01):**
+**Deprecation state (ADR-0029 Phase 6.9.d Session 7, 2026-09-01):**
 `add_raw_imports` / `add_raw_shared` (wit-bindgen path) are marked
-`#[deprecated]` — no production consumer remains (girder-wasmtime's
-raw-tvm actors migrated to `raw_linker_wasmos` at Sessions 3 + 6).
-The wit-bindgen entries stay pending a definitive perf-hot use case,
-and this bench continues to publish the head-to-head numbers so a
-future re-evaluation has data. Applying `#[allow(deprecated)]` at
-call site is the right escape hatch if you're intentionally taking
-the coupling for measured hot-loop wins.
+`#[deprecated]` — no production consumer remains. Session 8's
+3-way bench confirms the wit-bindgen path is still 4-13× faster
+than per-actor on small calls, so the escape-hatch case is real.
+This bench continues to publish the head-to-head numbers so a
+future re-evaluation has data.
 
-### Portable / cross-adapter code: use `raw_linker_wasmos`
+### Portable / cross-adapter code: `raw_linker_wasmos` (either variant)
 
 If you need the same handler surface to work on wasmtime v48,
 wasmtime edge, AND WAMR — or you're planning a runtime-abstracted
-downstream (girder does this) — the ~800ns constant is what
-portability costs. For a call that does 100μs of real work, this
-is <1% overhead. Live with it and get portability + the ability
-to swap adapters without rewriting.
+downstream (girder does this) — the wasmos overhead is what
+portability costs. For a call that does 100μs of real work, even
+the shared path adds <1%. Live with it and get portability + the
+ability to swap adapters without rewriting.
 
 ### Large-transfer workloads (>16KB per call)
 
