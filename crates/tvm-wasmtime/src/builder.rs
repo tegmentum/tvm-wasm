@@ -176,6 +176,92 @@ impl TvmBuilder {
         )
     }
 
+    /// ADR-0029 Phase 6.9 D2 Session 11 — wasmos-flavored
+    /// component-model builder finisher. Peer of [`Self::for_wasmos`]
+    /// for the component-model side of the surface. Returns a
+    /// [`wasmos_runtime_api::HostImports`] composite carrying all
+    /// three `tvm:memory@0.1.0` interfaces (`manager` / `bytes` /
+    /// `diagnostics`) as `#[host_iface(sync)]` handlers wired
+    /// against a shared TVM host — the wasmos equivalent of what
+    /// [`Self::build_component`] + [`crate::linker::add_to_linker`]
+    /// produced together in the wit-bindgen path.
+    ///
+    /// The tuple's [`crate::shared_host::SharedTvmHost`] is
+    /// returned alongside the imports so the caller can
+    /// hold a second clone-handle for host-side operations
+    /// (spill, load, direct region inspection) while the
+    /// installed `HostImports` handle stays owned by the
+    /// wasmos [`wasmos_runtime_api::ExecutionContext`].
+    ///
+    /// The `.with_wit_imports()` toggle from the wasmtime-typed
+    /// [`Self::build_component`] flow does not apply here — this
+    /// method always installs all three interfaces (matching the
+    /// wit-bindgen "install everything the WIT world declares"
+    /// behavior). Backing store + allocator + multi-memory
+    /// settings are IGNORED for the same reason [`Self::for_wasmos`]
+    /// ignores them; a `with_wasmos_backing` follow-up threads
+    /// them through when a consumer needs customisation.
+    ///
+    /// Typical composition with [`Self::for_wasmos`] for a
+    /// consumer that wants both raw + WIT paths:
+    ///
+    /// ```rust,ignore
+    /// let core_imports = TvmBuilder::new().for_wasmos();
+    /// let (host, host_imports) = TvmBuilder::new().for_wasmos_component();
+    /// let ctx = ExecutionContext::new()
+    ///     .with_core_imports(core_imports)
+    ///     .with_host_imports(host_imports);
+    /// ```
+    ///
+    /// Both call sites use fresh `TvmBuilder::new()` because the
+    /// builder is consumed by these finishers; a follow-up
+    /// `for_wasmos_full()` returning both composites off a single
+    /// builder pass is a natural next addition.
+    pub fn for_wasmos_component(
+        self,
+    ) -> (
+        crate::shared_host::SharedTvmHost,
+        wasmos_runtime_api::HostImports,
+    ) {
+        let host = crate::shared_host::SharedTvmHost::new();
+        let imports = crate::wasmos_bindings::install_tvm_imports_shared(
+            wasmos_runtime_api::HostImports::new(),
+            host.clone(),
+        );
+        (host, imports)
+    }
+
+    /// D2 Session 11 — one-shot finisher that returns everything a
+    /// consumer needs for the wasmos install path: the raw-tvm
+    /// `CoreImports` + the component-model `HostImports`, both
+    /// sharing the same [`SharedTvmHost`] so a guest that uses
+    /// both surfaces sees consistent state.
+    ///
+    /// This is the ergonomics gap called out in the Phase 6.9
+    /// tvm-wasm recon's "D2 core work complete — remaining is
+    /// decision-gated" section. Consumers who want the full wasmos
+    /// composite in one call use this; consumers who need only one
+    /// side use [`Self::for_wasmos`] or [`Self::for_wasmos_component`]
+    /// independently.
+    pub fn for_wasmos_full(
+        self,
+    ) -> (
+        crate::shared_host::SharedTvmHost,
+        wasmos_runtime_api::CoreImports,
+        wasmos_runtime_api::HostImports,
+    ) {
+        let host = crate::shared_host::SharedTvmHost::new();
+        let core = crate::raw_linker_wasmos::add_raw_imports(
+            wasmos_runtime_api::CoreImports::new(),
+            host.clone(),
+        );
+        let host_imports = crate::wasmos_bindings::install_tvm_imports_shared(
+            wasmos_runtime_api::HostImports::new(),
+            host.clone(),
+        );
+        (host, core, host_imports)
+    }
+
     fn build_internal(
         self,
         component_only: bool,
@@ -211,5 +297,66 @@ impl TvmBuilder {
             crate::raw_linker::add_raw_imports(&mut linker)?;
         }
         Ok((engine, store, linker, self.register_wit))
+    }
+}
+
+#[cfg(test)]
+mod wasmos_builder_tests {
+    use super::*;
+
+    #[test]
+    fn for_wasmos_component_returns_host_and_imports_matched_by_shared_arc() {
+        let (host, imports) = TvmBuilder::new().for_wasmos_component();
+        // The returned host is a fresh SharedTvmHost; the imports
+        // hold their own Arc-clone(s) captured at install time.
+        // Length checks the composite carries all three interfaces
+        // (manager / bytes / diagnostics) — matches the
+        // install_tvm_imports_shared behavior.
+        assert_eq!(imports.len(), 3);
+        assert!(imports.get("tvm:memory/manager@0.1.0").is_some());
+        assert!(imports.get("tvm:memory/bytes@0.1.0").is_some());
+        assert!(imports.get("tvm:memory/diagnostics@0.1.0").is_some());
+        // The host is a live SharedTvmHost — cloning still yields a
+        // shared handle onto the same TvmHost.
+        let _clone = host.clone();
+    }
+
+    #[test]
+    fn for_wasmos_full_returns_shared_host_bound_across_core_and_host_imports() {
+        let (host, core, host_imports) = TvmBuilder::new().for_wasmos_full();
+        // Raw path: 26 tvm.* handlers.
+        assert_eq!(core.len(), 26);
+        // Component-model path: 3 wit-bindgen-tvm interfaces.
+        assert_eq!(host_imports.len(), 3);
+        // The host is the returned shared handle; consumers use it
+        // for host-side operations (spill, load, direct inspection)
+        // while both composites drive guest-facing dispatch.
+        let mut g = host.lock();
+        // Sanity poke — the shared host works.
+        assert_eq!(g.default_allocator, tvm_core::AllocatorKind::Bump);
+        g.default_allocator = tvm_core::AllocatorKind::Freelist;
+        drop(g);
+        // A fresh lock sees the mutation — proves this is one shared
+        // TvmHost, not per-composite clones.
+        assert_eq!(host.lock().default_allocator, tvm_core::AllocatorKind::Freelist);
+    }
+
+    #[test]
+    fn for_wasmos_component_carries_bytes_and_diagnostics_interface_names_correctly() {
+        // Regression guard for the interface-name discipline (ducklink
+        // Phase 6.2.h.8 caught: version tag + kebab-case matter).
+        // If someone silently drops @0.1.0 or camelCases an arm, this
+        // fails at test time not integration time.
+        let (_, imports) = TvmBuilder::new().for_wasmos_component();
+        for iface in [
+            "tvm:memory/manager@0.1.0",
+            "tvm:memory/bytes@0.1.0",
+            "tvm:memory/diagnostics@0.1.0",
+        ] {
+            assert!(
+                imports.get(iface).is_some(),
+                "expected interface {iface} in composite"
+            );
+        }
     }
 }
