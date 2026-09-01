@@ -79,13 +79,80 @@ use crate::shared_host::SharedTvmHost;
 /// two reasons: (a) the two variants are the entire universe today
 /// (no third caller shape is on the horizon), and (b) enum matching
 /// stays branch-predictor-friendly on the hot path.
+/// Consumer-supplied extractor that projects the wasmtime store's
+/// consumer_state onto `&mut TvmHost`. Used by the `PerActor`
+/// variant to support store data types that hold `TvmHost` as a
+/// field (via [`AsMut<TvmHost>`]) — e.g. girder's `RawTvmState`
+/// which pairs `TvmHost` with per-actor limiter counters.
+///
+/// The default extractor ([`extract_direct`]) downcasts to `TvmHost`
+/// itself — the shape produced by
+/// [`add_raw_imports_per_actor`]. The generic
+/// [`add_raw_imports_per_actor_projected`] entry point wires a
+/// monomorphized extractor for any `T: AsMut<TvmHost> + 'static`.
+pub trait TvmHostExtractor: Send + Sync + 'static {
+    /// Return `&mut TvmHost` reached through the ctx's
+    /// `consumer_state` slot, or a diagnostic `RuntimeError` if the
+    /// slot is empty or holds the wrong concrete type.
+    fn extract<'a>(
+        &self,
+        ctx: &'a mut CoreImportContext<'_>,
+    ) -> RuntimeResult<&'a mut TvmHost>;
+}
+
+/// Monomorphized extractor for any `T: AsMut<TvmHost> + 'static`.
+/// The registered handler carries `PhantomData<T>`, but no `T`
+/// value at runtime — the projection is a single `as_mut()` call
+/// after the downcast.
+pub struct AsMutExtractor<T: AsMut<TvmHost> + 'static> {
+    _marker: std::marker::PhantomData<fn() -> T>,
+}
+
+impl<T: AsMut<TvmHost> + 'static> AsMutExtractor<T> {
+    pub fn new() -> Self {
+        Self {
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<T: AsMut<TvmHost> + 'static> Default for AsMutExtractor<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// PhantomData<fn() -> T> is Send + Sync unconditionally (no T is
+// held at runtime), so the impl is unconditional.
+impl<T: AsMut<TvmHost> + 'static> TvmHostExtractor for AsMutExtractor<T> {
+    fn extract<'a>(
+        &self,
+        ctx: &'a mut CoreImportContext<'_>,
+    ) -> RuntimeResult<&'a mut TvmHost> {
+        let state = ctx.consumer_state::<T>().ok_or_else(|| {
+            RuntimeError::msg(format!(
+                "raw_linker_wasmos::TvmHostSource::PerActor: no `{}` in \
+                 `ctx.consumer_state`. Install this composite via \
+                 `wasmos-runtime-wasmtime-v48::core_import_bridge::install_core_imports` \
+                 on a `wasmtime::Linker<T>` where `T: AsMut<TvmHost>` so the bridge \
+                 populates the consumer-state slot with the expected type.",
+                std::any::type_name::<T>(),
+            ))
+        })?;
+        Ok(state.as_mut())
+    }
+}
+
 #[derive(Clone)]
 pub(crate) enum TvmHostSource {
     /// Handler owns an `Arc<Mutex<TvmHost>>` clone; locks per call.
     Shared(SharedTvmHost),
     /// Handler pulls `&mut TvmHost` from
-    /// [`CoreImportContext::consumer_state`] on each call.
-    PerActor,
+    /// [`CoreImportContext::consumer_state`] on each call via a
+    /// consumer-supplied [`TvmHostExtractor`]. `Arc<dyn>` keeps the
+    /// enum trivially `Clone` (all 26 handlers get their own Arc
+    /// clone at register time — cheap).
+    PerActor(Arc<dyn TvmHostExtractor>),
 }
 
 impl TvmHostSource {
@@ -96,27 +163,18 @@ impl TvmHostSource {
     ///
     /// - [`Self::Shared`]: locks the mutex and wraps the
     ///   [`MutexGuard`](std::sync::MutexGuard).
-    /// - [`Self::PerActor`]: downcasts `ctx.consumer_state::
-    ///   <TvmHost>()` and wraps the resulting `&mut TvmHost`. Errors
-    ///   when the slot is empty or the wrong type — that means the
-    ///   `PerActor` variant was installed against a store whose data
-    ///   isn't the expected `TvmHost`.
+    /// - [`Self::PerActor`]: delegates to the consumer's
+    ///   [`TvmHostExtractor`], which reaches the store data via
+    ///   `ctx.consumer_state::<T>()` and (typically) projects
+    ///   through `AsMut<TvmHost>`.
     fn lock<'a>(
         &'a self,
         ctx: &'a mut CoreImportContext<'_>,
     ) -> RuntimeResult<TvmHostGuard<'a>> {
         match self {
             TvmHostSource::Shared(shared) => Ok(TvmHostGuard::Shared(shared.lock())),
-            TvmHostSource::PerActor => {
-                let host = ctx.consumer_state::<TvmHost>().ok_or_else(|| {
-                    RuntimeError::msg(
-                        "raw_linker_wasmos::TvmHostSource::PerActor: no `TvmHost` in \
-                         `ctx.consumer_state`. Install this composite via \
-                         `wasmos-runtime-wasmtime-v48::core_import_bridge::install_core_imports` \
-                         on a `wasmtime::Linker<TvmHost>` so the bridge populates the \
-                         consumer-state slot.",
-                    )
-                })?;
+            TvmHostSource::PerActor(extractor) => {
+                let host = extractor.extract(ctx)?;
                 Ok(TvmHostGuard::PerActor(host))
             }
         }
@@ -1046,15 +1104,22 @@ pub fn add_raw_imports_with_memory_name(
 ///
 /// - The consumer's Wasm actor already stores its `TvmHost` in
 ///   the wasmtime `Store` data (per-actor concurrency model — no
-///   sharing across actors). This is girder's
-///   `RawTvmActorInstance` shape.
+///   sharing across actors).
 /// - You want to avoid the per-call `SharedTvmHost::lock()` mutex
 ///   under a workload that's exclusively single-actor.
 ///
 /// Under the shared model, prefer [`add_raw_imports`] /
 /// [`add_raw_shared`] — no ctx contract to satisfy.
+///
+/// # Wrapper store data
+///
+/// This entry point assumes the store data IS a plain `TvmHost`.
+/// If your store data wraps a `TvmHost` in a larger struct (like
+/// girder's `RawTvmState { tvm: TvmHost, ... }` which implements
+/// `AsMut<TvmHost>` to expose it), use
+/// [`add_raw_imports_per_actor_projected`] instead.
 pub fn add_raw_imports_per_actor(imports: CoreImports) -> CoreImports {
-    add_raw_imports_per_actor_with_memory_name(imports, "memory")
+    add_raw_imports_per_actor_projected::<TvmHost>(imports)
 }
 
 /// Custom-memory-name variant of [`add_raw_imports_per_actor`].
@@ -1062,7 +1127,34 @@ pub fn add_raw_imports_per_actor_with_memory_name(
     imports: CoreImports,
     memory_name: &'static str,
 ) -> CoreImports {
-    register_all(imports, TvmHostSource::PerActor, memory_name)
+    add_raw_imports_per_actor_projected_with_memory_name::<TvmHost>(imports, memory_name)
+}
+
+/// Per-actor variant that projects through `T: AsMut<TvmHost>` —
+/// for consumers whose store data holds `TvmHost` as a field
+/// alongside per-actor bookkeeping (girder's `RawTvmState` shape).
+///
+/// Monomorphized: no dynamic dispatch overhead beyond the
+/// [`TvmHostExtractor`] `Arc` clone per handler (26 Arc clones at
+/// register time, one Arc bump on each per-call `extract`).
+pub fn add_raw_imports_per_actor_projected<T>(imports: CoreImports) -> CoreImports
+where
+    T: AsMut<TvmHost> + 'static,
+{
+    add_raw_imports_per_actor_projected_with_memory_name::<T>(imports, "memory")
+}
+
+/// Custom-memory-name variant of
+/// [`add_raw_imports_per_actor_projected`].
+pub fn add_raw_imports_per_actor_projected_with_memory_name<T>(
+    imports: CoreImports,
+    memory_name: &'static str,
+) -> CoreImports
+where
+    T: AsMut<TvmHost> + 'static,
+{
+    let extractor: Arc<dyn TvmHostExtractor> = Arc::new(AsMutExtractor::<T>::new());
+    register_all(imports, TvmHostSource::PerActor(extractor), memory_name)
 }
 
 /// Private common registrar — every public entry point delegates

@@ -199,7 +199,9 @@ async fn per_actor_wrong_store_data_errors_gracefully()
         .collect::<Vec<_>>()
         .join(" | ");
     assert!(
-        combined.contains("no `TvmHost` in `ctx.consumer_state`"),
+        combined.contains("TvmHost")
+            && combined.contains("ctx.consumer_state")
+            && combined.contains("install_core_imports"),
         "expected TvmHostSource::PerActor guard diagnostic in error chain, got: {combined}"
     );
     Ok(())
