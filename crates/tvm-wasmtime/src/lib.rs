@@ -73,15 +73,11 @@ pub use imported::{
     build_wasmos_imported_setup_with_data, create_imported_in_store, ImportedRegion,
     WasmosImportedRegion, WasmosImportedSetup,
 };
-// ADR-0029 Phase 6.9 D2 Session 5: the wit-bindgen linker entries
-// are marked `#[deprecated]` at their definitions; #[allow(deprecated)]
-// here so re-export doesn't emit an in-crate warning. Deprecation
-// still fires at every consumer call site outside the crate.
-#[allow(deprecated)]
-pub use linker::{
-    add_concurrent_to_linker, add_per_actor_to_linker, add_shared_to_linker, add_to_linker,
-    add_to_linker_with,
-};
+// ADR-0029 Phase 6.9 D2 Session 15b: the wit-bindgen linker entries
+// (add_to_linker, add_shared_to_linker, add_concurrent_to_linker,
+// add_per_actor_to_linker, add_to_linker_with) are RETIRED. Consumers
+// use the wasmos install path in wasmos_bindings — see linker.rs's
+// module docstring for the retired→wasmos migration table.
 pub use memory_factory::{
     RuntimeMemoryRegion, WasmosMemoryRegion, WasmtimeMemoryRegion, WASM_PAGE_SIZE,
 };

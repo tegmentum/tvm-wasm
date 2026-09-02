@@ -1,6 +1,11 @@
-#![allow(deprecated)] // ADR-0029 Phase 6.9 D2 Session 5 — this test intentionally exercises the deprecated wit-bindgen linker::add_*_to_linker family to guard the reference implementation while it coexists with wasmos_bindings::install_tvm_imports_*.
-
 //! Multi-thread / multi-store sharing via SharedTvmHost.
+//!
+//! ADR-0029 Phase 6.9 D2 Session 15b — the wasmtime linker
+//! registration test at the bottom of this file (previously
+//! `shared_host_via_linker_and_two_stores`) migrated off the
+//! retired `add_shared_to_linker` to the wasmos install path
+//! (`install_tvm_imports_shared`). The other tests exercise
+//! `SharedTvmHost` directly and are unchanged.
 
 use std::thread;
 
@@ -8,7 +13,10 @@ use tvm_wasmtime::bindings::tvm::memory::bytes::Host as BytesHost;
 use tvm_wasmtime::bindings::tvm::memory::diagnostics::Host as DiagnosticsHost;
 use tvm_wasmtime::bindings::tvm::memory::manager::Host as ManagerHost;
 use tvm_wasmtime::bindings::tvm::memory::types::RegionKind;
-use tvm_wasmtime::{add_shared_to_linker, SharedTvmHost};
+use tvm_wasmtime::wasmos_bindings::install_tvm_imports_shared;
+use tvm_wasmtime::SharedTvmHost;
+use wasmos_runtime_api::HostImports;
+use wasmos_runtime_wasmtime_v48::async_bridge;
 use wasmtime::component::{Component, Linker};
 use wasmtime::{Config, Engine, Store};
 
@@ -66,13 +74,21 @@ fn shared_host_via_linker_and_two_stores() -> anyhow::Result<()> {
     // stores can hold clones of the same SharedTvmHost.
     let component = Component::new(&engine, "(component)")?;
 
+    // Session 15b: install via wasmos install_tvm_imports_shared +
+    // v48 async_bridge. Each linker gets its own HostImports built
+    // against the same SharedTvmHost handle — cross-store visibility
+    // preserved via the Arc<Mutex<TvmHost>> inside SharedTvmHost.
     let mut linker_a: Linker<SharedTvmHost> = Linker::new(&engine);
-    add_shared_to_linker(&mut linker_a)?;
+    let imports_a = install_tvm_imports_shared(HostImports::new(), shared.clone());
+    async_bridge::install_host_imports(&engine, &mut linker_a, &component, &imports_a)
+        .map_err(|e| anyhow::anyhow!("wasmos install a: {e}"))?;
     let mut store_a = Store::new(&engine, shared.clone());
     let _instance_a = linker_a.instantiate(&mut store_a, &component)?;
 
     let mut linker_b: Linker<SharedTvmHost> = Linker::new(&engine);
-    add_shared_to_linker(&mut linker_b)?;
+    let imports_b = install_tvm_imports_shared(HostImports::new(), shared.clone());
+    async_bridge::install_host_imports(&engine, &mut linker_b, &component, &imports_b)
+        .map_err(|e| anyhow::anyhow!("wasmos install b: {e}"))?;
     let mut store_b = Store::new(&engine, shared.clone());
     let _instance_b = linker_b.instantiate(&mut store_b, &component)?;
 

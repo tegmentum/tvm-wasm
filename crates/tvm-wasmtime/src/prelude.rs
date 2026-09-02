@@ -16,11 +16,8 @@ pub use crate::host::TvmHost;
 pub use crate::imported::{
     build_imported_setup, build_imported_setup_with_data, create_imported_in_store, ImportedRegion,
 };
-// Phase 6.9 D2 Session 5: deprecated at definition; see lib.rs.
-#[allow(deprecated)]
-pub use crate::linker::{
-    add_concurrent_to_linker, add_shared_to_linker, add_to_linker, add_to_linker_with,
-};
+// Phase 6.9 D2 Session 15b: linker::add_*_to_linker RETIRED — see
+// linker.rs docstring for the wasmos install-path replacements.
 pub use crate::macros::tvm_mm_setup;
 // Phase 6.9.d Session 7: deprecated at definition; see lib.rs for
 // the rationale.

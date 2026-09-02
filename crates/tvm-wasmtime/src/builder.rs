@@ -126,17 +126,29 @@ impl TvmBuilder {
         };
         host.default_allocator = self.default_allocator;
         let store = Store::new(&engine, host);
-        let mut linker = wasmtime::component::Linker::<TvmHost>::new(&engine);
+        let linker = wasmtime::component::Linker::<TvmHost>::new(&engine);
         if self.register_wit {
-            // Phase 6.9 D2 Session 5: TvmBuilder's wit-bindgen
-            // finisher is the sibling of the wasmos finisher
-            // (`for_wasmos()`); the deprecation on add_to_linker
-            // doesn't change what this method returns. Consumers
-            // wanting to migrate off this whole builder branch
-            // should use TvmBuilder::for_wasmos() (Phase 6.9.d
-            // Session 1).
-            #[allow(deprecated)]
-            crate::linker::add_to_linker(&mut linker)?;
+            // ADR-0029 Phase 6.9 D2 Session 15b — TvmBuilder's
+            // wit-bindgen `register_wit` path no longer installs
+            // anything: the underlying `linker::add_to_linker` was
+            // retired at Session 15b. Consumers who reached
+            // `TvmBuilder::build_component()` with
+            // `.with_wit_imports()` should switch to
+            // [`Self::for_wasmos_component`] (Session 11) which
+            // returns the wasmos `HostImports` composite the
+            // caller installs into a linker via the v48
+            // async_bridge (see wasmos_bindings module docs).
+            //
+            // Retained as a no-op so existing callers get a clean
+            // "component instantiates but has no tvm imports"
+            // failure at instantiate-time rather than a build error.
+            return Err(wasmtime::Error::msg(
+                "TvmBuilder::build_component with .with_wit_imports() is retired at ADR-0029 \
+                 D2 Session 15b — use TvmBuilder::for_wasmos_component() and install the \
+                 returned HostImports composite via \
+                 wasmos_runtime_wasmtime_v48::async_bridge::install_host_imports \
+                 against your consumer-owned wasmtime::component::Linker.",
+            ));
         }
         Ok((engine, store, linker))
     }

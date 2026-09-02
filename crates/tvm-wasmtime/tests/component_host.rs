@@ -1,4 +1,10 @@
-#![allow(deprecated)] // ADR-0029 Phase 6.9 D2 Session 5 — this test intentionally exercises the deprecated wit-bindgen linker::add_*_to_linker family to guard the reference implementation while it coexists with wasmos_bindings::install_tvm_imports_*.
+// ADR-0029 Phase 6.9 D2 Session 15b — this test previously exercised
+// the deprecated wit-bindgen `linker::add_to_linker`. Session 15b
+// retired that entry point; the `add_to_linker_registers_all_interfaces`
+// test below now installs via the wasmos install path
+// (`install_tvm_imports_per_actor`) which drives the same three
+// interfaces through the wasmos abstraction. Other tests in this file
+// exercise the Host trait impls on TvmHost directly (unchanged).
 
 use tempfile::tempdir;
 use tvm_core::AllocatorKind;
@@ -6,7 +12,10 @@ use tvm_wasmtime::bindings::tvm::memory::bytes::Host as BytesHost;
 use tvm_wasmtime::bindings::tvm::memory::diagnostics::Host as DiagnosticsHost;
 use tvm_wasmtime::bindings::tvm::memory::manager::Host as ManagerHost;
 use tvm_wasmtime::bindings::tvm::memory::types::{Handle, RegionKind, Residency, TvmError};
-use tvm_wasmtime::{add_to_linker, TvmHost};
+use tvm_wasmtime::wasmos_bindings::install_tvm_imports_per_actor;
+use tvm_wasmtime::TvmHost;
+use wasmos_runtime_api::HostImports;
+use wasmos_runtime_wasmtime_v48::async_bridge;
 use wasmtime::component::{Component, Linker};
 use wasmtime::{Config, Engine, Store};
 
@@ -42,12 +51,16 @@ fn copy_between_handles() {
 }
 
 #[test]
-fn add_to_linker_registers_all_interfaces() -> anyhow::Result<()> {
+fn wasmos_install_tvm_imports_registers_all_interfaces() -> anyhow::Result<()> {
+    // Session 15b: was `add_to_linker_registers_all_interfaces` on the
+    // deprecated wit-bindgen path; now exercises the wasmos install
+    // path (`install_tvm_imports_per_actor::<TvmHost>` + v48
+    // async_bridge). Same guest surface, same host trait dispatch —
+    // just routed through the wasmos abstraction.
     let mut config = Config::new();
     config.wasm_component_model(true);
     let engine = Engine::new(&config)?;
     let mut linker: Linker<TvmHost> = Linker::new(&engine);
-    add_to_linker(&mut linker)?;
 
     // Trivial component that imports nothing and exports nothing — proves the
     // linker is in a consistent state after registration.
@@ -55,6 +68,11 @@ fn add_to_linker_registers_all_interfaces() -> anyhow::Result<()> {
         (component)
     "#;
     let component = Component::new(&engine, wat)?;
+
+    let imports = install_tvm_imports_per_actor::<TvmHost>(HostImports::new());
+    async_bridge::install_host_imports(&engine, &mut linker, &component, &imports)
+        .map_err(|e| anyhow::anyhow!("wasmos install: {e}"))?;
+
     let mut store = Store::new(&engine, TvmHost::new());
     let _instance = linker.instantiate(&mut store, &component)?;
     Ok(())
