@@ -1360,3 +1360,652 @@ pub fn add_raw_shared_with_memory_name(
 ) -> CoreImports {
     add_raw_imports_with_memory_name(imports, host, memory_name)
 }
+
+// ────────────────────────────────────────────────────────────────────
+// ADR-0029 D2 typed-args slice 4 (2026-09-02) — typed variants of
+// all 26 handlers using `CoreImports::register_typed`.
+//
+// # Why
+//
+// The dispatch path above every handler runs a `Vec<CoreValue>`
+// unpack (arity + variant checks encoded per-handler as `arg_i32` /
+// `arg_i64` calls on a heap-allocated Vec) and is wrapped in a
+// `Pin<Box<dyn Future>>` because `CoreImportFn::call` is async.
+// Neither cost is warranted for these handlers: every arg is a
+// scalar the adapter already has in typed form (`wasmtime::Val`),
+// and every body is fully synchronous (mutex lock / consumer_state
+// deref + a couple of `TvmHost` calls, no I/O to await).
+//
+// `register_typed` on `CoreImports` plus `func_new` (sync) on the
+// wasmtime v48/edge adapters skip both costs — see
+// `wasmos-runtime-wasmtime-v48/src/core_import_bridge.rs`'s
+// "dispatch precedence" section for the wire-side story. This
+// module registers typed handlers for the 21 region-only + 5
+// memory-touching handlers, exposed under
+// [`add_raw_imports_per_actor_projected_typed`] and its friends.
+//
+// # Why per-actor only
+//
+// The shared path takes a per-call `SharedTvmHost::lock()` mutex,
+// which dominates the ~250-400ns typed dispatch shaves. Adding a
+// typed shared path would double the surface for a delta lost in
+// mutex noise. If a workload emerges where the mutex is not the
+// bottleneck (uncontended, or already replaced with a lock-free
+// TvmHost variant), add `add_raw_imports_typed` mirroring the
+// per-actor entry below.
+// ────────────────────────────────────────────────────────────────────
+
+/// Register the raw `tvm.*` import surface via
+/// [`CoreImports::register_typed`] — the per-actor variant that
+/// pulls `&mut TvmHost` from [`CoreImportContext::consumer_state`]
+/// on each call, projected through `AsMut<TvmHost>`.
+///
+/// Same wiring contract as
+/// [`add_raw_imports_per_actor_projected`]: the returned composite
+/// MUST be installed via `wasmos-runtime-wasmtime-v48::
+/// core_import_bridge::install_core_imports` (or its edge sibling)
+/// on a `wasmtime::Linker<T>`. The bridge's typed pass routes each
+/// registration through `wasmtime::Linker::func_new` (sync).
+///
+/// # When to use this over the dynamic per-actor entry
+///
+/// - Hot loop of small handler calls (alloc/dealloc, sum_u8, …)
+///   where per-call dispatch overhead is a measurable fraction of
+///   handler cost. The `wasmos_overhead` bench in
+///   `tvm-wasmtime/benches/wasmos_overhead.rs` measures the delta.
+/// - Both entries are correct + interchangeable for identical
+///   inputs; the dynamic entry stays available for callers that
+///   want a stable pre-typed reference path.
+pub fn add_raw_imports_per_actor_projected_typed<T>(imports: CoreImports) -> CoreImports
+where
+    T: AsMut<TvmHost> + 'static,
+{
+    add_raw_imports_per_actor_projected_typed_with_memory_name::<T>(imports, "memory")
+}
+
+/// Custom-memory-name variant of
+/// [`add_raw_imports_per_actor_projected_typed`].
+pub fn add_raw_imports_per_actor_projected_typed_with_memory_name<T>(
+    imports: CoreImports,
+    memory_name: &'static str,
+) -> CoreImports
+where
+    T: AsMut<TvmHost> + 'static,
+{
+    let extractor: Arc<dyn TvmHostExtractor> = Arc::new(AsMutExtractor::<T>::new());
+    register_all_typed(imports, TvmHostSource::PerActor(extractor), memory_name)
+}
+
+/// Private common typed registrar — mirror of [`register_all`] but
+/// uses [`CoreImports::register_typed`] with sync closures. Every
+/// handler body is a direct port of its async equivalent above; the
+/// only difference is `Vec<CoreValue>` unpack + `async_trait::async_trait`
+/// boilerplate is dropped in favor of the closure's typed args.
+fn register_all_typed(
+    imports: CoreImports,
+    host: TvmHostSource,
+    memory_name: &'static str,
+) -> CoreImports {
+    // Region-only handlers first. Each closure captures a `host`
+    // clone (cheap — TvmHostSource is Arc-based on both variants).
+
+    // ── alloc: (region: i32, size: i32) -> i64 packed handle ──────
+    let h = host.clone();
+    let imports = imports.register_typed(
+        "tvm",
+        "alloc",
+        move |ctx: &mut CoreImportContext<'_>, (region, size): (i32, i32)| -> RuntimeResult<i64> {
+            let mut g = h.lock(ctx)?;
+            let host = &mut *g;
+            Ok(match host.directory.alloc(region as u16, size as u32) {
+                Ok(handle) => {
+                    host.cache.invalidate(region as u16);
+                    handle.pack() as i64
+                }
+                Err(e) => {
+                    host.last_raw_error = err_code(&e);
+                    0
+                }
+            })
+        },
+    );
+
+    // ── dealloc: (packed: i64) -> i32 err_code ────────────────────
+    let h = host.clone();
+    let imports = imports.register_typed(
+        "tvm",
+        "dealloc",
+        move |ctx: &mut CoreImportContext<'_>, packed: i64| -> RuntimeResult<i32> {
+            let handle = Handle::unpack(packed as u64);
+            let mut g = h.lock(ctx)?;
+            Ok(match g.directory.dealloc(handle) {
+                Ok(()) => ERR_OK,
+                Err(e) => err_code(&e),
+            })
+        },
+    );
+
+    // ── copy_region: (src_region, src_off, dst_region, dst_off, len) -> i32 err_code ──
+    let h = host.clone();
+    let imports = imports.register_typed(
+        "tvm",
+        "copy_region",
+        move |ctx: &mut CoreImportContext<'_>,
+              (src_region, src_off, dst_region, dst_off, len): (i32, i32, i32, i32, i32)|
+              -> RuntimeResult<i32> {
+            let mut g = h.lock(ctx)?;
+            Ok(match g.directory.cross_region_copy(
+                src_region as u16,
+                src_off as u32,
+                dst_region as u16,
+                dst_off as u32,
+                len as u32,
+            ) {
+                Ok(()) => ERR_OK,
+                Err(e) => err_code(&e),
+            })
+        },
+    );
+
+    // ── last_error: () -> i32 (drains + resets last_raw_error) ────
+    let h = host.clone();
+    let imports = imports.register_typed(
+        "tvm",
+        "last_error",
+        move |ctx: &mut CoreImportContext<'_>, _: ()| -> RuntimeResult<i32> {
+            let mut g = h.lock(ctx)?;
+            Ok(std::mem::replace(&mut g.last_raw_error, ERR_OK))
+        },
+    );
+
+    // ── reducer_i64_neg1 handlers (2): sum_u8, popcount ──────────
+    // Return i64; on error stash err_code + return -1.
+    macro_rules! reducer_i64_neg1_typed {
+        ($imports:ident, $name:literal, $call:ident) => {{
+            let h = host.clone();
+            $imports.register_typed(
+                "tvm",
+                $name,
+                move |ctx: &mut CoreImportContext<'_>, (packed, len): (i64, i32)|
+                      -> RuntimeResult<i64> {
+                    let handle = Handle::unpack(packed as u64);
+                    let mut g = h.lock(ctx)?;
+                    let host = &mut *g;
+                    Ok(match host.$call(handle, len as u32) {
+                        Ok(v) => v as i64,
+                        Err(e) => {
+                            host.last_raw_error = err_code(&e);
+                            -1
+                        }
+                    })
+                },
+            )
+        }};
+    }
+    let imports = reducer_i64_neg1_typed!(imports, "sum_u8", region_sum_u8);
+    let imports = reducer_i64_neg1_typed!(imports, "popcount", region_popcount);
+
+    // ── reducer_i32_neg1 handlers (3): and/or/xor_fold_u8 ────────
+    macro_rules! reducer_i32_neg1_typed {
+        ($imports:ident, $name:literal, $call:ident) => {{
+            let h = host.clone();
+            $imports.register_typed(
+                "tvm",
+                $name,
+                move |ctx: &mut CoreImportContext<'_>, (packed, len): (i64, i32)|
+                      -> RuntimeResult<i32> {
+                    let handle = Handle::unpack(packed as u64);
+                    let mut g = h.lock(ctx)?;
+                    let host = &mut *g;
+                    Ok(match host.$call(handle, len as u32) {
+                        Ok(v) => v as i32,
+                        Err(e) => {
+                            host.last_raw_error = err_code(&e);
+                            -1
+                        }
+                    })
+                },
+            )
+        }};
+    }
+    let imports = reducer_i32_neg1_typed!(imports, "and_fold_u8", region_and_fold_u8);
+    let imports = reducer_i32_neg1_typed!(imports, "or_fold_u8", region_or_fold_u8);
+    let imports = reducer_i32_neg1_typed!(imports, "xor_fold_u8", region_xor_fold_u8);
+
+    // ── hash_fnv1a: (packed: i64, len: i32) -> i64 (0 sentinel) ──
+    let h = host.clone();
+    let imports = imports.register_typed(
+        "tvm",
+        "hash_fnv1a",
+        move |ctx: &mut CoreImportContext<'_>, (packed, len): (i64, i32)| -> RuntimeResult<i64> {
+            let handle = Handle::unpack(packed as u64);
+            let mut g = h.lock(ctx)?;
+            let host = &mut *g;
+            Ok(match host.region_hash_fnv1a(handle, len as u32) {
+                Ok(v) => v as i64,
+                Err(e) => {
+                    host.last_raw_error = err_code(&e);
+                    0
+                }
+            })
+        },
+    );
+
+    // ── find_byte: (packed, len, byte) -> i32 (-1 miss, -2 err) ──
+    let h = host.clone();
+    let imports = imports.register_typed(
+        "tvm",
+        "find_byte",
+        move |ctx: &mut CoreImportContext<'_>, (packed, len, byte): (i64, i32, i32)|
+              -> RuntimeResult<i32> {
+            let handle = Handle::unpack(packed as u64);
+            let mut g = h.lock(ctx)?;
+            let host = &mut *g;
+            Ok(match host.region_find_byte(handle, len as u32, byte as u8) {
+                Ok(Some(off)) => off as i32,
+                Ok(None) => -1,
+                Err(e) => {
+                    host.last_raw_error = err_code(&e);
+                    -2
+                }
+            })
+        },
+    );
+
+    // ── count_byte: (packed, len, byte) -> i32 (-1 on err) ───────
+    let h = host.clone();
+    let imports = imports.register_typed(
+        "tvm",
+        "count_byte",
+        move |ctx: &mut CoreImportContext<'_>, (packed, len, byte): (i64, i32, i32)|
+              -> RuntimeResult<i32> {
+            let handle = Handle::unpack(packed as u64);
+            let mut g = h.lock(ctx)?;
+            let host = &mut *g;
+            Ok(match host.region_count_byte(handle, len as u32, byte as u8) {
+                Ok(c) => c as i32,
+                Err(e) => {
+                    host.last_raw_error = err_code(&e);
+                    -1
+                }
+            })
+        },
+    );
+
+    // ── eq: (packed_a, packed_b, len) -> i32 (1/0/-1) ────────────
+    let h = host.clone();
+    let imports = imports.register_typed(
+        "tvm",
+        "eq",
+        move |ctx: &mut CoreImportContext<'_>, (packed_a, packed_b, len): (i64, i64, i32)|
+              -> RuntimeResult<i32> {
+            let ha = Handle::unpack(packed_a as u64);
+            let hb = Handle::unpack(packed_b as u64);
+            let mut g = h.lock(ctx)?;
+            let host = &mut *g;
+            Ok(match host.region_eq(ha, hb, len as u32) {
+                Ok(true) => 1,
+                Ok(false) => 0,
+                Err(e) => {
+                    host.last_raw_error = err_code(&e);
+                    -1
+                }
+            })
+        },
+    );
+
+    // ── min_max_u8: (packed, len) -> i32 (packed lo/hi) ──────────
+    let h = host.clone();
+    let imports = imports.register_typed(
+        "tvm",
+        "min_max_u8",
+        move |ctx: &mut CoreImportContext<'_>, (packed, len): (i64, i32)| -> RuntimeResult<i32> {
+            let handle = Handle::unpack(packed as u64);
+            let mut g = h.lock(ctx)?;
+            let host = &mut *g;
+            Ok(match host.region_min_max_u8(handle, len as u32) {
+                Ok((lo, hi)) => ((lo as i32) << 8) | (hi as i32),
+                Err(e) => {
+                    host.last_raw_error = err_code(&e);
+                    -1
+                }
+            })
+        },
+    );
+
+    // ── xor_into_region: (packed_src, packed_dst, len) -> i32 err ─
+    let h = host.clone();
+    let imports = imports.register_typed(
+        "tvm",
+        "xor_into_region",
+        move |ctx: &mut CoreImportContext<'_>, (packed_src, packed_dst, len): (i64, i64, i32)|
+              -> RuntimeResult<i32> {
+            let src = Handle::unpack(packed_src as u64);
+            let dst = Handle::unpack(packed_dst as u64);
+            let mut g = h.lock(ctx)?;
+            let host = &mut *g;
+            Ok(match host.region_xor_into_region(src, dst, len as u32) {
+                Ok(()) => ERR_OK,
+                Err(e) => err_code(&e),
+            })
+        },
+    );
+
+    // ── sum_u32_le: (packed, len) -> i64 (-1 on err/overflow) ────
+    let h = host.clone();
+    let imports = imports.register_typed(
+        "tvm",
+        "sum_u32_le",
+        move |ctx: &mut CoreImportContext<'_>, (packed, len): (i64, i32)| -> RuntimeResult<i64> {
+            let handle = Handle::unpack(packed as u64);
+            let mut g = h.lock(ctx)?;
+            let host = &mut *g;
+            Ok(match host.region_sum_u32_le(handle, len as u32) {
+                Ok(s) if s <= i64::MAX as u128 => s as i64,
+                Ok(_) => {
+                    host.last_raw_error = err_code(&TvmError::OutOfBounds);
+                    -1
+                }
+                Err(e) => {
+                    host.last_raw_error = err_code(&e);
+                    -1
+                }
+            })
+        },
+    );
+
+    // ── max_u32_le: (packed, len) -> i64 (-1 err, -2 empty) ──────
+    let h = host.clone();
+    let imports = imports.register_typed(
+        "tvm",
+        "max_u32_le",
+        move |ctx: &mut CoreImportContext<'_>, (packed, len): (i64, i32)| -> RuntimeResult<i64> {
+            let handle = Handle::unpack(packed as u64);
+            let mut g = h.lock(ctx)?;
+            let host = &mut *g;
+            Ok(match host.region_max_u32_le(handle, len as u32) {
+                Ok(Some(v)) => v as i64,
+                Ok(None) => -2,
+                Err(e) => {
+                    host.last_raw_error = err_code(&e);
+                    -1
+                }
+            })
+        },
+    );
+
+    // ── count_in_range: (packed, len, lo, hi) -> i32 (-1 on err) ─
+    let h = host.clone();
+    let imports = imports.register_typed(
+        "tvm",
+        "count_in_range",
+        move |ctx: &mut CoreImportContext<'_>, (packed, len, lo, hi): (i64, i32, i32, i32)|
+              -> RuntimeResult<i32> {
+            let handle = Handle::unpack(packed as u64);
+            let mut g = h.lock(ctx)?;
+            let host = &mut *g;
+            Ok(match host.region_count_in_range(handle, len as u32, lo as u8, hi as u8) {
+                Ok(c) => c as i32,
+                Err(e) => {
+                    host.last_raw_error = err_code(&e);
+                    -1
+                }
+            })
+        },
+    );
+
+    // ── lex_cmp: (packed_a, packed_b, len) -> i32 (-1/0/1, -2 err) ─
+    let h = host.clone();
+    let imports = imports.register_typed(
+        "tvm",
+        "lex_cmp",
+        move |ctx: &mut CoreImportContext<'_>, (packed_a, packed_b, len): (i64, i64, i32)|
+              -> RuntimeResult<i32> {
+            let ha = Handle::unpack(packed_a as u64);
+            let hb = Handle::unpack(packed_b as u64);
+            let mut g = h.lock(ctx)?;
+            let host = &mut *g;
+            Ok(match host.region_lex_cmp(ha, hb, len as u32) {
+                Ok(core::cmp::Ordering::Less) => -1,
+                Ok(core::cmp::Ordering::Equal) => 0,
+                Ok(core::cmp::Ordering::Greater) => 1,
+                Err(e) => {
+                    host.last_raw_error = err_code(&e);
+                    -2
+                }
+            })
+        },
+    );
+
+    // ── fill: (packed, len, byte) -> i32 err ─────────────────────
+    let h = host.clone();
+    let imports = imports.register_typed(
+        "tvm",
+        "fill",
+        move |ctx: &mut CoreImportContext<'_>, (packed, len, byte): (i64, i32, i32)|
+              -> RuntimeResult<i32> {
+            let handle = Handle::unpack(packed as u64);
+            let mut g = h.lock(ctx)?;
+            Ok(match g.region_fill(handle, len as u32, byte as u8) {
+                Ok(()) => ERR_OK,
+                Err(e) => err_code(&e),
+            })
+        },
+    );
+
+    // ── xor_with_byte: (packed, len, byte) -> i32 err ────────────
+    let h = host.clone();
+    let imports = imports.register_typed(
+        "tvm",
+        "xor_with_byte",
+        move |ctx: &mut CoreImportContext<'_>, (packed, len, byte): (i64, i32, i32)|
+              -> RuntimeResult<i32> {
+            let handle = Handle::unpack(packed as u64);
+            let mut g = h.lock(ctx)?;
+            Ok(match g.region_xor_with_byte(handle, len as u32, byte as u8) {
+                Ok(()) => ERR_OK,
+                Err(e) => err_code(&e),
+            })
+        },
+    );
+
+    // ── Memory-touching handlers (5) ─────────────────────────────
+    //
+    // These invoke `ctx.guest_memory_{read,write}`, so the closure
+    // needs `&mut CoreImportContext` for both the host lock and the
+    // memory call. The lock guard's lifetime is scoped to a block
+    // so the ctx borrow releases before the memory-side calls.
+
+    // ── read: (packed, dst_ptr, len) -> i32 err ──────────────────
+    let h = host.clone();
+    let imports = imports.register_typed(
+        "tvm",
+        "read",
+        move |ctx: &mut CoreImportContext<'_>, (packed, dst_ptr, len): (i64, i32, i32)|
+              -> RuntimeResult<i32> {
+            let handle = Handle::unpack(packed as u64);
+            let len_us = len as usize;
+            let mut scratch = vec![0u8; len_us];
+            {
+                let mut g = h.lock(ctx)?;
+                let host = &mut *g;
+                if let Err(e) = host.directory.read(handle, &mut scratch) {
+                    host.last_raw_error = err_code(&e);
+                    return Ok(err_code(&e));
+                }
+            }
+            if ctx
+                .guest_memory_write(memory_name, dst_ptr as u64, &scratch)
+                .is_err()
+            {
+                return Ok(ERR_GUEST_MEMORY);
+            }
+            Ok(ERR_OK)
+        },
+    );
+
+    // ── write: (packed, src_ptr, len) -> i32 err ─────────────────
+    let h = host.clone();
+    let imports = imports.register_typed(
+        "tvm",
+        "write",
+        move |ctx: &mut CoreImportContext<'_>, (packed, src_ptr, len): (i64, i32, i32)|
+              -> RuntimeResult<i32> {
+            let handle = Handle::unpack(packed as u64);
+            let len_us = len as usize;
+            let mut scratch = vec![0u8; len_us];
+            if ctx
+                .guest_memory_read(memory_name, src_ptr as u64, &mut scratch)
+                .is_err()
+            {
+                return Ok(ERR_GUEST_MEMORY);
+            }
+            let mut g = h.lock(ctx)?;
+            let host = &mut *g;
+            Ok(match host.directory.write(handle, &scratch) {
+                Ok(()) => ERR_OK,
+                Err(e) => {
+                    host.last_raw_error = err_code(&e);
+                    err_code(&e)
+                }
+            })
+        },
+    );
+
+    // ── read_gather: (packed, indices_ptr, count, item_size, dst_ptr) -> i32 err ─
+    let h = host.clone();
+    let imports = imports.register_typed(
+        "tvm",
+        "read_gather",
+        move |ctx: &mut CoreImportContext<'_>,
+              (packed, indices_ptr, count, item_size, dst_ptr): (i64, i32, i32, i32, i32)|
+              -> RuntimeResult<i32> {
+            let handle = Handle::unpack(packed as u64);
+            let count_us = count as usize;
+            let item = item_size as usize;
+
+            let mut indices_bytes = vec![0u8; count_us * 4];
+            if ctx
+                .guest_memory_read(memory_name, indices_ptr as u64, &mut indices_bytes)
+                .is_err()
+            {
+                return Ok(ERR_GUEST_MEMORY);
+            }
+            let mut indices = Vec::with_capacity(count_us);
+            for i in 0..count_us {
+                indices.push(u32::from_le_bytes([
+                    indices_bytes[i * 4],
+                    indices_bytes[i * 4 + 1],
+                    indices_bytes[i * 4 + 2],
+                    indices_bytes[i * 4 + 3],
+                ]));
+            }
+
+            let dense_contiguous = if count_us >= 2 {
+                let stride = indices[1].wrapping_sub(indices[0]);
+                stride as usize == item
+                    && (1..count_us).all(|k| indices[k].wrapping_sub(indices[k - 1]) == stride)
+            } else {
+                count_us == 1
+            };
+
+            let mut scratch = vec![0u8; count_us * item];
+            {
+                let mut g = h.lock(ctx)?;
+                let host = &mut *g;
+                if dense_contiguous && count_us > 0 {
+                    let cell = Handle {
+                        offset: handle.offset.wrapping_add(indices[0]),
+                        ..handle
+                    };
+                    if let Err(e) = host.directory.read(cell, &mut scratch) {
+                        return Ok(err_code(&e));
+                    }
+                } else {
+                    for i in 0..count_us {
+                        let off = indices[i];
+                        let cell = Handle {
+                            offset: handle.offset.wrapping_add(off),
+                            ..handle
+                        };
+                        if let Err(e) = host
+                            .directory
+                            .read(cell, &mut scratch[i * item..(i + 1) * item])
+                        {
+                            return Ok(err_code(&e));
+                        }
+                    }
+                }
+            }
+
+            if ctx
+                .guest_memory_write(memory_name, dst_ptr as u64, &scratch)
+                .is_err()
+            {
+                return Ok(ERR_GUEST_MEMORY);
+            }
+            Ok(ERR_OK)
+        },
+    );
+
+    // ── index_of: (packed, len, needle_ptr, needle_len) -> i32 ───
+    let h = host.clone();
+    let imports = imports.register_typed(
+        "tvm",
+        "index_of",
+        move |ctx: &mut CoreImportContext<'_>,
+              (packed, len, needle_ptr, needle_len): (i64, i32, i32, i32)|
+              -> RuntimeResult<i32> {
+            let handle = Handle::unpack(packed as u64);
+            if !(0..=4096).contains(&needle_len) {
+                return Ok(-2);
+            }
+            let needle_n = needle_len as usize;
+            let mut needle = vec![0u8; needle_n];
+            if ctx
+                .guest_memory_read(memory_name, needle_ptr as u64, &mut needle)
+                .is_err()
+            {
+                return Ok(ERR_GUEST_MEMORY);
+            }
+            let mut g = h.lock(ctx)?;
+            let host = &mut *g;
+            Ok(match host.region_index_of(handle, len as u32, &needle) {
+                Ok(Some(off)) => off as i32,
+                Ok(None) => -1,
+                Err(e) => {
+                    host.last_raw_error = err_code(&e);
+                    -2
+                }
+            })
+        },
+    );
+
+    // ── byte_histogram: (packed, len, out_ptr) -> i32 err ────────
+    let h = host.clone();
+    let imports = imports.register_typed(
+        "tvm",
+        "byte_histogram",
+        move |ctx: &mut CoreImportContext<'_>, (packed, len, out_ptr): (i64, i32, i32)|
+              -> RuntimeResult<i32> {
+            let handle = Handle::unpack(packed as u64);
+            let mut buf = [0u8; 1024];
+            {
+                let mut g = h.lock(ctx)?;
+                let host = &mut *g;
+                if let Err(e) = host.region_byte_histogram(handle, len as u32, &mut buf) {
+                    return Ok(err_code(&e));
+                }
+            }
+            if ctx
+                .guest_memory_write(memory_name, out_ptr as u64, &buf)
+                .is_err()
+            {
+                return Ok(ERR_GUEST_MEMORY);
+            }
+            Ok(ERR_OK)
+        },
+    );
+
+    imports
+}

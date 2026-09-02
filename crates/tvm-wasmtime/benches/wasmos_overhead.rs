@@ -49,6 +49,7 @@ use tvm_test_harness::mann_whitney_u;
 use tvm_wasmtime::raw_linker_wasmos::{
     add_raw_imports as add_raw_imports_wasmos,
     add_raw_imports_per_actor_projected as add_raw_imports_per_actor_wasmos,
+    add_raw_imports_per_actor_projected_typed as add_raw_imports_per_actor_typed_wasmos,
 };
 use tvm_wasmtime::shared_host::SharedTvmHost;
 use tvm_wasmtime::{add_raw_imports, TvmHost};
@@ -125,11 +126,64 @@ fn pair_summary(
     );
 }
 
-/// ADR-0029 Phase 6.9.b refresh (Session 8): three-way summary
-/// comparing wasmtime-native, wasmos-shared, and wasmos-per-actor.
-/// Per-actor is the new path landed at Phase 6.9.d Session 5; it
-/// removes the SharedTvmHost mutex from the shared path and pulls
-/// TvmHost from ctx.consumer_state instead.
+/// ADR-0029 D2 typed-args slice 4 refresh (2026-09-02): four-way
+/// summary. Adds a wasmos-per-actor-typed column alongside the
+/// existing wasmtime / wasmos-shared / wasmos-per-actor (dynamic)
+/// paths. Typed = `register_typed` + `func_new` (sync); dynamic =
+/// `register` + `func_new_async` + `Vec<CoreValue>` unpack per call.
+fn quad_summary(
+    label_wt: &str,
+    label_wo_shared: &str,
+    label_wo_per_actor: &str,
+    label_wo_per_actor_typed: &str,
+    wt: Vec<Duration>,
+    wo_shared: Vec<Duration>,
+    wo_per_actor: Vec<Duration>,
+    wo_per_actor_typed: Vec<Duration>,
+    size: u32,
+) {
+    let mut wt = wt;
+    let mut ws = wo_shared;
+    let mut wp = wo_per_actor;
+    let mut wpt = wo_per_actor_typed;
+    report(label_wt, size, &mut wt);
+    report(label_wo_shared, size, &mut ws);
+    report(label_wo_per_actor, size, &mut wp);
+    report(label_wo_per_actor_typed, size, &mut wpt);
+    let raw_wt: Vec<u128> = wt.iter().map(|d| d.as_nanos()).collect();
+    let raw_ws: Vec<u128> = ws.iter().map(|d| d.as_nanos()).collect();
+    let raw_wp: Vec<u128> = wp.iter().map(|d| d.as_nanos()).collect();
+    let raw_wpt: Vec<u128> = wpt.iter().map(|d| d.as_nanos()).collect();
+    let mean = |v: &[u128]| v.iter().map(|n| *n as f64).sum::<f64>() / v.len() as f64;
+    let ovh_sh = (mean(&raw_ws) - mean(&raw_wt)) / mean(&raw_wt) * 100.0;
+    let ovh_pa = (mean(&raw_wp) - mean(&raw_wt)) / mean(&raw_wt) * 100.0;
+    let ovh_pat = (mean(&raw_wpt) - mean(&raw_wt)) / mean(&raw_wt) * 100.0;
+    let typed_vs_pa = (mean(&raw_wpt) - mean(&raw_wp)) / mean(&raw_wp) * 100.0;
+    let u_sh = mann_whitney_u(&raw_wt, &raw_ws);
+    let u_pa = mann_whitney_u(&raw_wt, &raw_wp);
+    let u_pat = mann_whitney_u(&raw_wt, &raw_wpt);
+    let u_typed_vs_pa = mann_whitney_u(&raw_wp, &raw_wpt);
+    println!(
+        "    shared        overhead vs wasmtime     = {:+.1}%   U={:.3}",
+        ovh_sh, u_sh
+    );
+    println!(
+        "    per-actor     overhead vs wasmtime     = {:+.1}%   U={:.3}",
+        ovh_pa, u_pa
+    );
+    println!(
+        "    per-actor+typed overhead vs wasmtime  = {:+.1}%   U={:.3}",
+        ovh_pat, u_pat
+    );
+    println!(
+        "    per-actor+typed  delta vs per-actor    = {:+.1}%   U={:.3}",
+        typed_vs_pa, u_typed_vs_pa
+    );
+}
+
+/// Retained for reference; the D2 slice 4 refresh moved to
+/// [`quad_summary`]. Kept in case a follow-up wants triple reports.
+#[allow(dead_code)]
 fn triple_summary(
     label_wt: &str,
     label_wo_shared: &str,
@@ -484,16 +538,112 @@ fn run_wasmos_per_actor_workload(
     }
 }
 
+// ── Wasmos per-actor + typed runner (D2 slice 4, 2026-09-02) ─────────
+//
+// Same shape as the per-actor (dynamic) runner above, but the
+// composite is built through `add_raw_imports_per_actor_typed_wasmos`
+// so every handler goes through wasmos's `register_typed` +
+// `func_new` (sync) path — no `Vec<CoreValue>` unpack per call,
+// no `Pin<Box<Future>>` construction.
+
+fn setup_wasmos_per_actor_typed(
+    tokio_rt: &tokio::runtime::Runtime,
+    wat: &str,
+    size: u32,
+    data: &[u8],
+) -> anyhow::Result<WasmosPerActorSetup> {
+    let mut config = Config::new();
+    #[allow(deprecated)]
+    config.async_support(true);
+    let engine = Engine::new(&config)?;
+    let mut host = TvmHost::new();
+    let region = host.create_region(RegionKind::HotHeap, size + 4096)?;
+    let h = host.alloc(region, size)?;
+    host.write_bytes(h, data)?;
+    let packed = h.pack() as i64;
+
+    let module = Module::new(&engine, wat::parse_str(wat)?)?;
+    let imports = add_raw_imports_per_actor_typed_wasmos::<TvmHost>(CoreImports::new());
+    let mut linker: Linker<TvmHost> = Linker::new(&engine);
+    core_import_bridge::install_core_imports(&mut linker, &module, &imports)?;
+
+    let mut store = Store::new(&engine, host);
+    let instance = tokio_rt.block_on(async {
+        linker.instantiate_async(&mut store, &module).await
+    })?;
+    Ok(WasmosPerActorSetup {
+        store,
+        packed,
+        region,
+        instance,
+        rt_handle: tokio_rt.handle().clone(),
+    })
+}
+
+fn run_wasmos_per_actor_typed_alloc(
+    tokio_rt: &tokio::runtime::Runtime,
+    size: u32,
+) -> anyhow::Result<Vec<Duration>> {
+    let data = vec![0u8; size as usize];
+    let mut s = setup_wasmos_per_actor_typed(tokio_rt, ALLOC_DEALLOC_WAT, size, &data)?;
+    let region = s.region;
+    let handle = s.rt_handle.clone();
+    let spin = s
+        .instance
+        .get_typed_func::<(i32, i32), i32>(&mut s.store, "spin")?;
+    time_loop(|| {
+        handle.block_on(spin.call_async(&mut s.store, (region as i32, 16)))?;
+        Ok(())
+    })
+}
+
+fn run_wasmos_per_actor_typed_workload(
+    tokio_rt: &tokio::runtime::Runtime,
+    wat: &str,
+    fn_name: &str,
+    size: u32,
+    data: &[u8],
+) -> anyhow::Result<Vec<Duration>> {
+    let mut s = setup_wasmos_per_actor_typed(tokio_rt, wat, size, data)?;
+    let packed = s.packed;
+    let handle = s.rt_handle.clone();
+    let sz = size as i32;
+    match fn_name {
+        "sum" => {
+            let f = s
+                .instance
+                .get_typed_func::<(i64, i32), i64>(&mut s.store, "sum")?;
+            time_loop(|| {
+                handle.block_on(f.call_async(&mut s.store, (packed, sz)))?;
+                Ok(())
+            })
+        }
+        "write" | "read" => {
+            let f = s
+                .instance
+                .get_typed_func::<(i64, i32), i32>(&mut s.store, fn_name)?;
+            time_loop(|| {
+                handle.block_on(f.call_async(&mut s.store, (packed, sz)))?;
+                Ok(())
+            })
+        }
+        other => anyhow::bail!("unknown fn_name {other:?}"),
+    }
+}
+
 // ── Main ─────────────────────────────────────────────────────────────
 
 fn main() -> anyhow::Result<()> {
-    println!("==> wasmos-overhead benchmark (Phase 6.9.b, refreshed at Session 8)");
+    println!("==> wasmos-overhead benchmark (D2 slice 4 refresh, 2026-09-02)");
     println!("    {} samples + {} warmup", SAMPLES, WARMUP);
     println!(
-        "    three-way: wasmtime-native raw_linker vs wasmos-shared raw_linker_wasmos"
+        "    four-way: wasmtime-native raw_linker vs wasmos-shared raw_linker_wasmos"
     );
     println!(
-        "               vs wasmos-per-actor raw_linker_wasmos (via core_import_bridge)"
+        "              vs wasmos-per-actor raw_linker_wasmos (dynamic dispatch, async trait obj)"
+    );
+    println!(
+        "              vs wasmos-per-actor+typed (register_typed + func_new sync)"
     );
     println!();
 
@@ -506,13 +656,16 @@ fn main() -> anyhow::Result<()> {
     let wt = run_wasmtime_alloc(4096)?;
     let ws = run_wasmos_alloc(&tokio_rt, 4096)?;
     let wp = run_wasmos_per_actor_alloc(&tokio_rt, 4096)?;
-    triple_summary(
-        "    wasmtime  (Linker::func_wrap)",
-        "    wasmos-sh (CoreImports+SharedTvmHost)",
-        "    wasmos-pa (CoreImports+ctx.consumer_state)",
+    let wpt = run_wasmos_per_actor_typed_alloc(&tokio_rt, 4096)?;
+    quad_summary(
+        "    wasmtime      (Linker::func_wrap)",
+        "    wasmos-sh     (CoreImports+SharedTvmHost)",
+        "    wasmos-pa     (register+func_new_async)",
+        "    wasmos-pa-typ (register_typed+func_new)",
         wt,
         ws,
         wp,
+        wpt,
         0,
     );
     println!();
@@ -527,13 +680,18 @@ fn main() -> anyhow::Result<()> {
         let ws = run_wasmos_workload(&tokio_rt, SUM_U8_WAT, "sum", size, &data)?;
         let wp =
             run_wasmos_per_actor_workload(&tokio_rt, SUM_U8_WAT, "sum", size, &data)?;
-        triple_summary(
-            "    wasmtime  sum_u8",
-            "    wasmos-sh sum_u8",
-            "    wasmos-pa sum_u8",
+        let wpt = run_wasmos_per_actor_typed_workload(
+            &tokio_rt, SUM_U8_WAT, "sum", size, &data,
+        )?;
+        quad_summary(
+            "    wasmtime      sum_u8",
+            "    wasmos-sh     sum_u8",
+            "    wasmos-pa     sum_u8",
+            "    wasmos-pa-typ sum_u8",
             wt,
             ws,
             wp,
+            wpt,
             size,
         );
 
@@ -543,13 +701,18 @@ fn main() -> anyhow::Result<()> {
         let ws = run_wasmos_workload(&tokio_rt, WRITE_WAT, "write", size, &data)?;
         let wp =
             run_wasmos_per_actor_workload(&tokio_rt, WRITE_WAT, "write", size, &data)?;
-        triple_summary(
-            "    wasmtime  write",
-            "    wasmos-sh write",
-            "    wasmos-pa write",
+        let wpt = run_wasmos_per_actor_typed_workload(
+            &tokio_rt, WRITE_WAT, "write", size, &data,
+        )?;
+        quad_summary(
+            "    wasmtime      write",
+            "    wasmos-sh     write",
+            "    wasmos-pa     write",
+            "    wasmos-pa-typ write",
             wt,
             ws,
             wp,
+            wpt,
             size,
         );
 
@@ -559,13 +722,18 @@ fn main() -> anyhow::Result<()> {
         let ws = run_wasmos_workload(&tokio_rt, READ_WAT, "read", size, &data)?;
         let wp =
             run_wasmos_per_actor_workload(&tokio_rt, READ_WAT, "read", size, &data)?;
-        triple_summary(
-            "    wasmtime  read",
-            "    wasmos-sh read",
-            "    wasmos-pa read",
+        let wpt = run_wasmos_per_actor_typed_workload(
+            &tokio_rt, READ_WAT, "read", size, &data,
+        )?;
+        quad_summary(
+            "    wasmtime      read",
+            "    wasmos-sh     read",
+            "    wasmos-pa     read",
+            "    wasmos-pa-typ read",
             wt,
             ws,
             wp,
+            wpt,
             size,
         );
 

@@ -21,7 +21,7 @@ anyhow = { workspace = true }
 #
 # When wasmos publishes to crates.io the git = "…" becomes
 # version = "0.1" and the workspace patch can retire.
-wasmos-runtime-api = { git = "https://github.com/tegmentum/wasmos.git", rev = "d01a5d68" }
+wasmos-runtime-api = { git = "https://github.com/tegmentum/wasmos.git", rev = "d3fd84d7" }
 async-trait = "0.1"
 
 [dev-dependencies]
@@ -35,7 +35,7 @@ tvm-test-harness = { path = "../tvm-test-harness" }
 # Phase 6.9.a — v48 wasmos adapter is our reference back-end for
 # raw_linker_wasmos integration tests. Same git-dep + workspace-
 # patch pattern as wasmos-runtime-api above.
-wasmos-runtime-wasmtime-v48 = { git = "https://github.com/tegmentum/wasmos.git", rev = "d01a5d68" }
+wasmos-runtime-wasmtime-v48 = { git = "https://github.com/tegmentum/wasmos.git", rev = "d3fd84d7" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [[bench]]
