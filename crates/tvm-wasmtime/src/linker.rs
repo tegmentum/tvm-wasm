@@ -64,19 +64,23 @@ pub fn add_shared_to_linker<T: AsMut<SharedTvmHost> + Send + 'static>(
 /// different regions run in parallel — preferred over `add_shared_to_linker`
 /// when stores hit distinct regions.
 ///
-/// **Deprecated (ADR-0029 Phase 6.9 D2 Session 5).** No wasmos-side
-/// equivalent yet; the `ConcurrentTvmHost` per-region-locking shape
-/// is not directly mirrored by `TvmHostSource`. If your workload
-/// hits this warning, either stay on this entry point behind
-/// `#[allow(deprecated)]` or open a wasmos-side design session for
-/// a concurrent variant (`TvmHostSource::Concurrent(ConcurrentTvmHost)`
-/// would be the natural extension).
+/// **Deprecated (ADR-0029 Phase 6.9 D2 Sessions 5 + 13).** The
+/// wasmos-native equivalent is
+/// [`crate::wasmos_bindings::install_tvm_imports_concurrent`]
+/// (Session 13). Migration is a 2-line swap:
+///   `add_concurrent_to_linker(&mut linker)`
+///   → `install_tvm_imports_concurrent(HostImports::new(),
+///      concurrent_host)` threaded into the wasmos
+///      `ExecutionContext`.
+///
+/// Same per-region-locking semantics; the wasmos handlers
+/// delegate to `ConcurrentTvmHost`'s own Host trait impls which
+/// carry the internal per-region locks.
 #[deprecated(
     since = "0.1.1",
-    note = "No wasmos-side ConcurrentTvmHost variant yet. Stay on this \
-            entry behind `#[allow(deprecated)]` if you need per-region \
-            parallelism, or use install_tvm_imports_shared for the \
-            single-mutex shape."
+    note = "Use `wasmos_bindings::install_tvm_imports_concurrent(imports, ConcurrentTvmHost)` \
+            with a wasmos-backed ExecutionContext. Session 13 (D2 in-place arc) landed the \
+            wasmos peer with identical per-region-locking semantics."
 )]
 pub fn add_concurrent_to_linker<T: AsMut<ConcurrentTvmHost> + Send + 'static>(
     linker: &mut Linker<T>,

@@ -1230,6 +1230,353 @@ pub fn install_tvm_imports_per_actor_budget(
     install_tvm_diagnostics_imports_per_actor_budget(imports, host)
 }
 
+// ── D2 Session 13 — ConcurrentTvmHost wasmos peer ───────────────────
+//
+// Closes bindings.rs retirement gate 1. Sibling of the D2 Session
+// 12 PerActorTvmHost peer above. `ConcurrentTvmHost` (in
+// concurrent_host.rs) is `Clone` (holds per-region locks
+// internally) and implements the three Host traits directly. Same
+// implementation shape as Session 12: each handler clones the host
+// into a local mut binding and delegates to the wit-bindgen Host
+// trait method; the internal per-region locks preserve the
+// wit-bindgen path's concurrency semantics.
+
+/// Wasmos-native implementation of `tvm:memory/manager@0.1.0`
+/// against [`crate::ConcurrentTvmHost`]. Per-region locking lets
+/// operations on different regions run in parallel — preferred
+/// over [`TvmManagerHost`] (which locks the whole `SharedTvmHost`
+/// mutex per call) when stores hit distinct regions.
+#[derive(Clone)]
+pub struct TvmManagerHostConcurrent {
+    host: crate::ConcurrentTvmHost,
+}
+
+impl TvmManagerHostConcurrent {
+    pub fn new(host: crate::ConcurrentTvmHost) -> Self {
+        Self { host }
+    }
+}
+
+#[host_iface(sync)]
+impl TvmManagerHostConcurrent {
+    fn create_region(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        kind: RegionKind,
+        capacity: u32,
+    ) -> RuntimeResult<Result<u16, TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgManagerHost::create_region(&mut h, kind.into(), capacity).map_err(Into::into))
+    }
+
+    fn destroy_region(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgManagerHost::destroy_region(&mut h, region_id).map_err(Into::into))
+    }
+
+    fn alloc(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+        size: u32,
+    ) -> RuntimeResult<Result<Handle, TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgManagerHost::alloc(&mut h, region_id, size)
+            .map(Into::into)
+            .map_err(Into::into))
+    }
+
+    fn dealloc(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        ptr: Handle,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgManagerHost::dealloc(&mut h, ptr.into()).map_err(Into::into))
+    }
+
+    fn describe_region(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<Result<RegionInfo, TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgManagerHost::describe_region(&mut h, region_id)
+            .map(Into::into)
+            .map_err(Into::into))
+    }
+
+    fn promote_region(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgManagerHost::promote_region(&mut h, region_id).map_err(Into::into))
+    }
+
+    fn demote_region(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgManagerHost::demote_region(&mut h, region_id).map_err(Into::into))
+    }
+
+    fn spill_region(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgManagerHost::spill_region(&mut h, region_id).map_err(Into::into))
+    }
+
+    fn load_region(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgManagerHost::load_region(&mut h, region_id).map_err(Into::into))
+    }
+
+    fn pin(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgManagerHost::pin(&mut h, region_id).map_err(Into::into))
+    }
+
+    fn unpin(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgManagerHost::unpin(&mut h, region_id).map_err(Into::into))
+    }
+
+    fn compact_region(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<Result<CompactResult, TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgManagerHost::compact_region(&mut h, region_id)
+            .map(Into::into)
+            .map_err(Into::into))
+    }
+}
+
+/// Register `tvm:memory/manager@0.1.0` in concurrent mode.
+pub fn install_tvm_manager_imports_concurrent(
+    imports: HostImports,
+    host: crate::ConcurrentTvmHost,
+) -> HostImports {
+    imports.register_sync("tvm:memory/manager@0.1.0", TvmManagerHostConcurrent::new(host))
+}
+
+/// Wasmos-native implementation of `tvm:memory/bytes@0.1.0`
+/// against [`crate::ConcurrentTvmHost`].
+#[derive(Clone)]
+pub struct TvmBytesHostConcurrent {
+    host: crate::ConcurrentTvmHost,
+}
+
+impl TvmBytesHostConcurrent {
+    pub fn new(host: crate::ConcurrentTvmHost) -> Self {
+        Self { host }
+    }
+}
+
+#[host_iface(sync)]
+impl TvmBytesHostConcurrent {
+    fn read(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        ptr: Handle,
+        len: u32,
+    ) -> RuntimeResult<Result<Vec<u8>, TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgBytesHost::read(&mut h, ptr.into(), len).map_err(Into::into))
+    }
+
+    fn write(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        ptr: Handle,
+        data: Vec<u8>,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgBytesHost::write(&mut h, ptr.into(), data).map_err(Into::into))
+    }
+
+    fn copy(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        src: Handle,
+        dst: Handle,
+        len: u32,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgBytesHost::copy(&mut h, src.into(), dst.into(), len).map_err(Into::into))
+    }
+
+    fn read_into(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        src: Handle,
+        dst_region: u16,
+        dst_offset: u32,
+        len: u32,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgBytesHost::read_into(&mut h, src.into(), dst_region, dst_offset, len)
+            .map_err(Into::into))
+    }
+
+    fn write_from(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        src_region: u16,
+        src_offset: u32,
+        dst: Handle,
+        len: u32,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgBytesHost::write_from(&mut h, src_region, src_offset, dst.into(), len)
+            .map_err(Into::into))
+    }
+
+    fn copy_region(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        src_region: u16,
+        src_offset: u32,
+        dst_region: u16,
+        dst_offset: u32,
+        len: u32,
+    ) -> RuntimeResult<Result<(), TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgBytesHost::copy_region(&mut h, src_region, src_offset, dst_region, dst_offset, len)
+            .map_err(Into::into))
+    }
+}
+
+/// Register `tvm:memory/bytes@0.1.0` in concurrent mode.
+pub fn install_tvm_bytes_imports_concurrent(
+    imports: HostImports,
+    host: crate::ConcurrentTvmHost,
+) -> HostImports {
+    imports.register_sync("tvm:memory/bytes@0.1.0", TvmBytesHostConcurrent::new(host))
+}
+
+/// Wasmos-native implementation of `tvm:memory/diagnostics@0.1.0`
+/// against [`crate::ConcurrentTvmHost`].
+#[derive(Clone)]
+pub struct TvmDiagnosticsHostConcurrent {
+    host: crate::ConcurrentTvmHost,
+}
+
+impl TvmDiagnosticsHostConcurrent {
+    pub fn new(host: crate::ConcurrentTvmHost) -> Self {
+        Self { host }
+    }
+}
+
+#[host_iface(sync)]
+impl TvmDiagnosticsHostConcurrent {
+    fn list_regions(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+    ) -> RuntimeResult<Vec<RegionInfo>> {
+        let mut h = self.host.clone();
+        Ok(BgDiagnosticsHost::list_regions(&mut h)
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
+    fn fault_count(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<u64> {
+        let mut h = self.host.clone();
+        Ok(BgDiagnosticsHost::fault_count(&mut h, region_id))
+    }
+
+    fn allocation_count(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<u64> {
+        let mut h = self.host.clone();
+        Ok(BgDiagnosticsHost::allocation_count(&mut h, region_id))
+    }
+
+    fn bytes_read_count(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<u64> {
+        let mut h = self.host.clone();
+        Ok(BgDiagnosticsHost::bytes_read_count(&mut h, region_id))
+    }
+
+    fn bytes_written_count(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<u64> {
+        let mut h = self.host.clone();
+        Ok(BgDiagnosticsHost::bytes_written_count(&mut h, region_id))
+    }
+
+    fn metrics_snapshot(
+        &self,
+        _ctx: &mut HostCallContext<'_>,
+        region_id: u16,
+    ) -> RuntimeResult<Result<RegionMetrics, TvmError>> {
+        let mut h = self.host.clone();
+        Ok(BgDiagnosticsHost::metrics_snapshot(&mut h, region_id)
+            .map(Into::into)
+            .map_err(Into::into))
+    }
+}
+
+/// Register `tvm:memory/diagnostics@0.1.0` in concurrent mode.
+pub fn install_tvm_diagnostics_imports_concurrent(
+    imports: HostImports,
+    host: crate::ConcurrentTvmHost,
+) -> HostImports {
+    imports.register_sync(
+        "tvm:memory/diagnostics@0.1.0",
+        TvmDiagnosticsHostConcurrent::new(host),
+    )
+}
+
+/// Concurrent composite — one-shot registration of all three
+/// `tvm:memory@0.1.0` interfaces against a
+/// [`crate::ConcurrentTvmHost`]. Direct wasmos replacement for
+/// the deprecated [`crate::linker::add_concurrent_to_linker`].
+pub fn install_tvm_imports_concurrent(
+    imports: HostImports,
+    host: crate::ConcurrentTvmHost,
+) -> HostImports {
+    let imports = install_tvm_manager_imports_concurrent(imports, host.clone());
+    let imports = install_tvm_bytes_imports_concurrent(imports, host.clone());
+    install_tvm_diagnostics_imports_concurrent(imports, host)
+}
+
 // ── Round-trip tests ────────────────────────────────────────────────
 //
 // Guard against silent WIT drift: if the wit-bindgen shape changes,
@@ -1635,5 +1982,85 @@ mod tests {
             .expect("second alloc");
         let is_ok = matches!(out2.as_slice(), [Value::Result(Ok(_))]);
         assert!(is_ok, "post-dealloc alloc must succeed within budget");
+    }
+
+    // ── D2 Session 13 — ConcurrentTvmHost tests ─────────────────────
+
+    use crate::ConcurrentTvmHost;
+
+    #[test]
+    fn install_tvm_imports_concurrent_composite_registers_all_three() {
+        let host = ConcurrentTvmHost::new();
+        let imports = install_tvm_imports_concurrent(HostImports::new(), host);
+        assert_eq!(imports.len(), 3);
+        assert!(imports.get("tvm:memory/manager@0.1.0").is_some());
+        assert!(imports.get("tvm:memory/bytes@0.1.0").is_some());
+        assert!(imports.get("tvm:memory/diagnostics@0.1.0").is_some());
+    }
+
+    #[test]
+    fn concurrent_alloc_read_write_round_trip() {
+        use wasmos_runtime_api::{SyncHostCall, Value};
+
+        let host = ConcurrentTvmHost::new();
+        // Pre-create region via the host trait — concurrent doesn't
+        // need a separate lock step, the host's per-region locks
+        // are internal.
+        {
+            let mut h = host.clone();
+            <ConcurrentTvmHost as BgManagerHost>::create_region(&mut h, bg::RegionKind::HotHeap, 256)
+                .expect("create_region");
+        }
+
+        let manager = TvmManagerHostConcurrent::new(host.clone());
+        let bytes = TvmBytesHostConcurrent::new(host.clone());
+        let mut inner_ctx = EmptyCtx;
+        let mut ctx = HostCallContext::new(&mut inner_ctx);
+
+        // Alloc 16 in region 0.
+        let out = manager
+            .call(&mut ctx, "alloc", vec![Value::U16(0), Value::U32(16)])
+            .expect("alloc");
+        let handle = match out.as_slice() {
+            [Value::Result(Ok(Some(p)))] => (**p).clone(),
+            other => panic!("expected Result::Ok, got {other:?}"),
+        };
+
+        // Write bytes through the bytes interface — WIT list<u8> is
+        // wire-encoded as Value::Bytes on the wasmos side.
+        let payload: Vec<u8> = (0..16u8).collect();
+        let write_res = bytes
+            .call(
+                &mut ctx,
+                "write",
+                vec![handle.clone(), Value::Bytes(payload.clone().into())],
+            )
+            .expect("write");
+        assert!(matches!(write_res.as_slice(), [Value::Result(Ok(_))]));
+
+        // Read the bytes back — returns Value::Bytes for the WIT
+        // list<u8> return type.
+        let read_res = bytes
+            .call(&mut ctx, "read", vec![handle, Value::U32(16)])
+            .expect("read");
+        // The wasmos value marshaller returns Vec<u8> as Value::List<U8>
+        // (list<u8> in WIT is a list of u8, marshalled as elements).
+        // The write direction accepts Value::Bytes as a shorthand for
+        // the same wire shape.
+        let bytes_back: Vec<u8> = match read_res.as_slice() {
+            [Value::Result(Ok(Some(p)))] => match &**p {
+                Value::List(items) => items
+                    .iter()
+                    .map(|v| match v {
+                        Value::U8(b) => *b,
+                        other => panic!("expected U8 element, got {other:?}"),
+                    })
+                    .collect(),
+                Value::Bytes(b) => b.to_vec(),
+                other => panic!("expected List or Bytes, got {other:?}"),
+            },
+            other => panic!("expected Result::Ok, got {other:?}"),
+        };
+        assert_eq!(bytes_back, payload);
     }
 }
