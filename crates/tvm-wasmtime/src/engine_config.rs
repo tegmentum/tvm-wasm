@@ -113,6 +113,12 @@ pub fn imported_region_runtime_config() -> wasmos_runtime_api::RuntimeConfig {
         required_capabilities: None,
         profiling: wasmos_runtime_api::config::ProfilingStrategy::None,
         allocation_strategy: wasmos_runtime_api::config::AllocationStrategy::OnDemand,
+        // ADR-0029 Phase 6.5.e Session A — added to satisfy the
+        // new RuntimeConfig field. tvm-wasm's raw path doesn't
+        // need periodic epoch preemption (its consumers use the
+        // execution_deadline hard-trap path when they need
+        // preemption).
+        epoch_tick_period: None,
     }
 }
 
@@ -147,6 +153,9 @@ pub fn pooling_imported_region_runtime_config(
                 max_memory_bytes: Some(memory_max_bytes),
             },
         ),
+        // Session A — same rationale as
+        // `imported_region_runtime_config`.
+        epoch_tick_period: None,
     }
 }
 
