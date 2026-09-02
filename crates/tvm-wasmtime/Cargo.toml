@@ -11,10 +11,17 @@ wasmtime = { workspace = true }
 anyhow = { workspace = true }
 
 # ADR-0029 Phase 6.9.a — the wasmos-runtime-api migration path.
-# Sibling repo path deps mirror the wasm-cm approach in
-# `hosts/wasmos-cm/Cargo.toml`. Deps become `version = "0.1"` once
-# wasmos publishes to crates.io.
-wasmos-runtime-api = { path = "../../../wasmos/runtime/api" }
+# Git dep so external consumers (sqlink-host, girder-wasmtime, …)
+# can pull tvm-wasmtime from git without needing the sibling
+# wasmos checkout at ../../../wasmos. The workspace-level
+# `[patch."https://github.com/tegmentum/wasmos.git"]` block below
+# redirects to the local sibling checkout when this crate is
+# built from within tvm-wasm's own workspace, so local dev keeps
+# the "edit and cargo build" loop.
+#
+# When wasmos publishes to crates.io the git = "…" becomes
+# version = "0.1" and the workspace patch can retire.
+wasmos-runtime-api = { git = "https://github.com/tegmentum/wasmos.git", rev = "d01a5d68" }
 async-trait = "0.1"
 
 [dev-dependencies]
@@ -26,9 +33,9 @@ criterion = "0.5"
 tvm-test-harness = { path = "../tvm-test-harness" }
 
 # Phase 6.9.a — v48 wasmos adapter is our reference back-end for
-# raw_linker_wasmos integration tests. Path dep for the migration
-# window; picks up `version = "0.1"` when wasmos publishes.
-wasmos-runtime-wasmtime-v48 = { path = "../../../wasmos/runtime/wasmtime/v48" }
+# raw_linker_wasmos integration tests. Same git-dep + workspace-
+# patch pattern as wasmos-runtime-api above.
+wasmos-runtime-wasmtime-v48 = { git = "https://github.com/tegmentum/wasmos.git", rev = "d01a5d68" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [[bench]]

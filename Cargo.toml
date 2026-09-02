@@ -43,3 +43,20 @@ wasmtime = { version = "48.0.0", features = ["component-model", "cranelift", "ru
 wat = "1"
 wit-component = "0.240"
 anyhow = "1.0"
+
+# ADR-0029 D2 Session 15a (2026-09-01): wasmos deps in
+# `crates/tvm-wasmtime/Cargo.toml` are declared as git+rev so
+# external consumers (sqlink-host, girder-wasmtime, …) can pull
+# tvm-wasmtime from git without needing the sibling wasmos
+# checkout. When this crate is built from within tvm-wasm's own
+# workspace, this patch redirects the git dep to the sibling
+# checkout at ../wasmos so local dev keeps the "edit and cargo
+# build" loop; without a wasmos sibling checkout, the git rev is
+# used verbatim.
+#
+# When wasmos publishes to crates.io, both this patch and the
+# git = "…" specs in tvm-wasmtime's Cargo.toml retire in favor
+# of `version = "0.1"`.
+[patch."https://github.com/tegmentum/wasmos.git"]
+wasmos-runtime-api = { path = "../wasmos/runtime/api" }
+wasmos-runtime-wasmtime-v48 = { path = "../wasmos/runtime/wasmtime/v48" }
